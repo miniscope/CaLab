@@ -534,7 +534,6 @@ export class FastLoop {
           flattenSigmaPx: this.o.flattenSigmaPx,
           budget: this.o.budget,
           ...this.run,
-          ...(this.run.csettle ? { csettlePool: this.o.poolSize } : {}),
         },
         [],
       );

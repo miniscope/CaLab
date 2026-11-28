@@ -7,8 +7,11 @@
  * Background settle (`SlowInit.csettle`, frames
  * only; `CSETTLE` in `settle.ts`): while a look-back Discover runs below Max,
  * the look-back worker also re-reads saved frames spread over the history
- * seen so far (`settleTake`), at the settle governor's rate (`SettleGovernor`:
- * re-read frames per second, at most the cap per live frame; `setCap`, `setPace`).
+ * seen so far (`settleTake`), at the settle governor's dose (`SettleGovernor`:
+ * re-read frames per live frame, climbing to the cap; `setCap`, `setPace`).
+ * The frames to re-read are taken at the end of each live batch, a chunk per
+ * whole chunk owed (`liveFrames`), so which frames are asked for depends on the
+ * live frames observed only; the chunks wait in `queue` until a worker is free.
  * It is armed the first time the target goes below Max with a cap above 0,
  * so a run at Max never starts it. Their answers go into the footprint statistics
  * (`observeSettle`); held-out frames are not even solved. There are no
@@ -64,8 +67,10 @@ export interface BgSettleHost {
 
 /** Background settle (`SlowInit.csettle`), for the current run, once armed. */
 export interface BgSettle {
-  /** The rate per second, the re-read frames owed, and the cap. */
+  /** The dose per live frame, the re-read frames owed, and the cap. */
   gov: SettleGovernor;
+  /** Chunks taken at batch ends and not yet asked for, oldest first (dropped at Discover's end). */
+  queue: BgSettleChunk[];
   /** Frames per piece of an answer (0: whole answers). */
   yieldFrames: number;
   /** Worker 0 without a pool: need-driven look-back first, the settle only when it asks nothing (`SlowInit.csettleNeedFirst`). */
@@ -76,6 +81,7 @@ export interface BgSettle {
   off: boolean;
   /** The answers in hand, when they are handled in pieces (at most one per look-back worker). */
   works: BgSettleWork[];
+  /** Re-read frames taken into the queue (asked for, or dropped while queued). */
   requested: number;
   /** Frames dropped here (an answer with no library yet, or one cut short by the end of Discover). */
   dropped: number;
@@ -84,6 +90,13 @@ export interface BgSettle {
   answers: number;
   answerMs: number;
   maxBlockMs: number;
+}
+
+/** A chunk of saved frames to re-read: the request's frame list, its items and held-out flags. */
+interface BgSettleChunk {
+  flat: Float64Array;
+  items: LookbackItem[];
+  skip: Uint8Array;
 }
 
 /** An answer of Background settle being fed to the slow loop. */
@@ -102,7 +115,7 @@ export class BgSettleDriver {
   bgs: BgSettle | null = null;
 
   /** This run may arm Background settle (`SlowInit.csettle` with look-back), and how. */
-  bgArm: { yieldFrames: number; needFirst: boolean; forwardPool: number } | null = null;
+  bgArm: { yieldFrames: number; needFirst: boolean } | null = null;
 
   /**
    * Arm Background settle the first time this run's target is below
@@ -121,14 +134,11 @@ export class BgSettleDriver {
     )
       return;
     loop.enableSettle(CSETTLE.chunk);
-    const gov = new SettleGovernor(
-      this.r.cap,
-      Math.max(1, this.r.settlePorts().length),
-      arm.forwardPool,
-    );
+    const gov = new SettleGovernor(this.r.cap, Math.max(1, this.r.settlePorts().length));
     gov.setTarget(this.r.pace.fps, this.r.pace.paused);
     this.bgs = {
       gov,
+      queue: [],
       yieldFrames: arm.yieldFrames,
       needFirst: arm.needFirst,
       turn: false,
@@ -158,42 +168,62 @@ export class BgSettleDriver {
   }
 
   /**
-   * Background settle: one chunk of saved frames to look-back worker
-   * `port`, when a whole chunk is owed (`SettleGovernor`)
+   * A live batch of `observed` frames went into the slow loop: they earn the dose, and every
+   * whole chunk owed is taken now (`settleTake` over the frames forwarded so far) into the
+   * queue (no bound: a queue that keeps growing is the readout's `look-back` or `slow-worker`
+   * limit, and what is left at Discover's end is dropped). Called at the end of every live batch, so the frames taken depend
+   * on the live frames only, not on when answers arrive.
+   */
+  liveFrames(loop: SlowLoopLike, bgs: BgSettle, observed: number): void {
+    bgs.live += observed;
+    bgs.gov.liveFrames(observed, this.r.version > 0);
+    while (bgs.gov.ready) {
+      // The frames forwarded so far are the saved history (stream index = file frame).
+      const take = this.r.clock.span('csettle', () =>
+        loop.settleTake(this.r.consumed, CSETTLE.chunk),
+      );
+      // The current session only (as `needRequest`).
+      const keep: number[] = [];
+      for (let i = 0; 3 * i + 2 < take.length; i++) if (take[3 * i] >= this.r.lbFloor) keep.push(i);
+      const n = keep.length;
+      if (n === 0) break;
+      const flat = new Float64Array(3 * n);
+      const skip = new Uint8Array(n);
+      const items: LookbackItem[] = [];
+      keep.forEach((k, i) => {
+        flat[3 * i] = take[3 * k];
+        flat[3 * i + 1] = take[3 * k + 1];
+        skip[i] = take[3 * k + 2] > 0 ? 1 : 0;
+        items.push({ frame: take[3 * k], ids: new Float64Array(0) });
+      });
+      bgs.gov.spend(n);
+      bgs.requested += n;
+      bgs.queue.push({ flat, items, skip });
+    }
+    this.noteBacklog(bgs);
+  }
+
+  /**
+   * Background settle: the oldest queued chunk to look-back worker `port`, when one is queued
    * and no answer of that worker is still being fed in pieces.
    */
-  bgSettleRequest(loop: SlowLoopLike, bgs: BgSettle, port: number): boolean {
-    // No settle reads before the first library: the look-back worker would solve nothing.
+  bgSettleRequest(_loop: SlowLoopLike, bgs: BgSettle, port: number): boolean {
+    // Switched off meanwhile (the cap Off, or the target at Max): what is queued is dropped.
+    if (!bgs.gov.active) {
+      this.dropQueue(bgs);
+      return false;
+    }
     if (
       (port === 0 && bgs.off) ||
       bgs.works.some((w) => w.req.port === port) ||
-      !bgs.gov.ready ||
-      !this.r.lookbackLive ||
-      this.r.version <= 0
+      bgs.queue.length === 0 ||
+      !this.r.lookbackLive
     )
       return false;
-    // The frames forwarded so far are the saved history (stream index = file frame).
-    const take = this.r.clock.span('csettle', () =>
-      loop.settleTake(this.r.consumed, CSETTLE.chunk),
-    );
-    // The current session only (as `needRequest`).
-    const keep: number[] = [];
-    for (let i = 0; 3 * i + 2 < take.length; i++) if (take[3 * i] >= this.r.lbFloor) keep.push(i);
-    const n = keep.length;
-    if (n === 0) return false;
-    const flat = new Float64Array(3 * n);
-    const skip = new Uint8Array(n);
-    const items: LookbackItem[] = [];
-    keep.forEach((k, i) => {
-      flat[3 * i] = take[3 * k];
-      flat[3 * i + 1] = take[3 * k + 1];
-      skip[i] = take[3 * k + 2] > 0 ? 1 : 0;
-      items.push({ frame: take[3 * k], ids: new Float64Array(0) });
-    });
-    bgs.gov.spend(n);
-    bgs.requested += n;
+    const chunk = bgs.queue.shift()!;
+    this.noteBacklog(bgs);
     if (port === 0) bgs.turn = false;
-    this.r.sendRequest(port, 'csettle', flat, items, skip);
+    this.r.sendRequest(port, 'csettle', chunk.flat, chunk.items, chunk.skip);
     return true;
   }
 
@@ -315,10 +345,22 @@ export class BgSettleDriver {
     bgs.maxBlockMs = Math.max(bgs.maxBlockMs, ms);
   }
 
-  /** Discover is over: answers still being fed in pieces are dropped (their buffers go back). */
+  /** The queued chunks are dropped (counted in `dropped`). */
+  private dropQueue(bgs: BgSettle): void {
+    for (const chunk of bgs.queue.splice(0)) bgs.dropped += chunk.items.length;
+    this.noteBacklog(bgs);
+  }
+
+  /** The governor's readout of the frames queued. */
+  private noteBacklog(bgs: BgSettle): void {
+    bgs.gov.setBacklog(bgs.queue.reduce((n, c) => n + c.items.length, 0));
+  }
+
+  /** Discover is over: queued chunks and answers still being fed in pieces are dropped (their buffers go back). */
   bgSettleStop(): void {
     const bgs = this.bgs;
     if (!bgs) return;
+    this.dropQueue(bgs);
     for (const work of bgs.works.splice(0)) {
       bgs.dropped += work.msg.count - work.next;
       this.r.releaseFrames(work.msg, work.req.port);

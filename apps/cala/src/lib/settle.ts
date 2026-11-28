@@ -326,7 +326,7 @@ export const CSETTLE = {
   rates: [2, 1, 0.5],
   /** Frames per request, read in a row (one chunk of the engine's `SettleSched`). */
   chunk: 16,
-  /** At most this many chunks owed: what the look-back worker cannot deliver is not saved up. */
+  /** More than this many chunks waiting for a worker: the readout names who falls behind. */
   bankChunks: 4,
 } as const;
 

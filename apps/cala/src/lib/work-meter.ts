@@ -788,12 +788,12 @@ export function workText(r: WorkRates | null, maxFps: number, gov?: GovernorStat
   return lines.join('\n') + g;
 }
 
-/** The settle governor's line of the readout: its rate, its limits, and what limits it now. */
+/** The settle governor's line of the readout: its dose as a rate, its limits, and what limits it now. */
 export function governorText(s: GovernorStatus): string {
   const fps = s.achieved === null ? '?' : s.achieved.toFixed(1);
   const target = s.target > 0 ? `${s.target}` : 'Max';
   return (
     `governor ${s.rate.toFixed(0)} frames/s · limit: ${GOVERNOR_LIMIT_TEXT[s.limit]}${s.paused ? ' (paused)' : ''}\n` +
-    `        cap ${s.capFps.toFixed(0)} (${s.cap} x ${fps} of ${target} fps), delivered ${s.deliveredFps.toFixed(0)}/s, settle workers busy ${pct(s.busy)}, owed ${s.credit.toFixed(0)}, halvings ${s.halvings} (${s.slowHalvings} wait or drop)`
+    `        cap ${s.capFps.toFixed(0)} (${s.cap} x ${fps} of ${target} fps), delivered ${s.deliveredFps.toFixed(0)}/s, settle workers busy ${pct(s.busy)}, owed ${s.credit.toFixed(0)}, backlog ${s.backlog.toFixed(0)}`
   );
 }

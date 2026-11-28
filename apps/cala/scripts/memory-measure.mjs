@@ -361,7 +361,7 @@ const fmt = (r) => {
     ? ` lb pushed ${st.lb.pushed} need ${st.lb.inNeed} births ${st.lb.births}${st.lb.settling ? ' settling' : ''}${st.lb.settle ? ` settle ${st.lb.settle.fed}/${st.lb.settle.total}${st.lb.settle.moving ? ` moving ${st.lb.settle.moving.above}/${st.lb.settle.moving.cells}` : ''}` : ''}${st.lb.error ? ` ERR ${st.lb.error}` : ''}${st.final ? ' final' : ''}`
     : '';
   const cs = st.lb?.csettle
-    ? ` cs ${st.lb.csettle.fit}+${st.lb.csettle.heldOut}+${st.lb.csettle.dropped}/${st.lb.csettle.requested} live ${st.lb.csettle.live} ans ${st.lb.csettle.answers} ${(st.lb.csettle.answerMs / Math.max(1, st.lb.csettle.answers)).toFixed(1)}ms max ${st.lb.csettle.maxBlockMs.toFixed(0)}ms${st.lb.csettle.governor ? ` gov ${st.lb.csettle.governor.rate.toFixed(0)}/s ${st.lb.csettle.governor.limit} halv ${st.lb.csettle.governor.halvings}(${st.lb.csettle.governor.slowHalvings})` : ''}`
+    ? ` cs ${st.lb.csettle.fit}+${st.lb.csettle.heldOut}+${st.lb.csettle.dropped}/${st.lb.csettle.requested} live ${st.lb.csettle.live} ans ${st.lb.csettle.answers} ${(st.lb.csettle.answerMs / Math.max(1, st.lb.csettle.answers)).toFixed(1)}ms max ${st.lb.csettle.maxBlockMs.toFixed(0)}ms${st.lb.csettle.governor ? ` gov ${st.lb.csettle.governor.rate.toFixed(0)}/s ${st.lb.csettle.governor.limit} backlog ${(st.lb.csettle.governor.backlog ?? 0).toFixed(0)}` : ''}`
     : '';
   const drop = st.batch ? ` drop ${st.batch.drop}/${st.batch.drop + st.batch.fwd}` : '';
   const slow = st.slow ? ` jobs ${st.slow.jobs} refines ${st.slow.refines}` : '';

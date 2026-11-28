@@ -405,18 +405,20 @@ describe('settle during Discover: dose and requests', () => {
     expect(t.requests().length).toBe(1);
   });
 
-  it('the bank: what the look-back worker cannot deliver is not saved up', () => {
+  it('a worker that falls behind is owed everything taken: the backlog is asked for in turn', () => {
     const t = setup({ csettle: 2 });
-    // 1,000 live batches (80 s at 100 fps); the worker answers nothing meanwhile.
-    t.live(1000);
+    // 100 live batches; the worker answers nothing meanwhile.
+    t.live(100);
     expect(t.requests().length).toBe(1);
-    // With no new live frames, only the bank (4 chunks) is asked for after the one out.
+    const cs = t.status().csettle!;
+    expect(cs.governor!.backlog).toBe(cs.requested - CSETTLE.chunk);
+    // With no new live frames, every queued chunk goes out, one per answer.
     let n = 0;
-    while (t.pending() && n < 100) {
+    while (t.pending() && n < 1000) {
       t.answer();
       n++;
     }
-    expect(t.requests().length).toBe(1 + CSETTLE.bankChunks);
+    expect(t.requests().length * CSETTLE.chunk).toBe(cs.requested);
   });
 
   it('a worker that keeps up is held at the cap: 2, 1 or 0.5 per live frame', () => {
