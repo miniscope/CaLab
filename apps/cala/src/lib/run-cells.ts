@@ -77,6 +77,12 @@ export interface RunCells {
    * each library at the frame it is stamped with. Off: results are applied as they arrive.
    */
   repeatable?: boolean;
+  /**
+   * A repeatable run that starts at a target speed: stage A feeds every batch to the flat-field
+   * estimator and puts each map in force at a frame fixed by the data (`FLAT_APPLY_LAG`). Absent
+   * at Max (stage A never waits for the estimator there), as the slow worker's barrier is off.
+   */
+  repeatableFlat?: boolean;
 }
 
 /**
@@ -109,6 +115,7 @@ export function normalizeRunCells(c: RunCells): RunCells {
       ? { settleVisitRate: c.settleVisitRate }
       : {}),
     ...(c.repeatable === true ? { repeatable: true } : {}),
+    ...(c.repeatable === true && c.repeatableFlat === true ? { repeatableFlat: true } : {}),
   };
 }
 

@@ -212,7 +212,7 @@ async function handle(req: FrameRequest): Promise<void> {
             : null;
         const stage = new FrontStage(src, req.options, () => frontPool!.acquire(), req.replay, {
           session: flatSession,
-          ...(req.cells?.repeatable ? { repeatable: true } : {}),
+          ...(req.cells?.repeatableFlat ? { repeatable: true } : {}),
           ...(flatSink ? { sink: flatSink } : {}),
           ...(req.flat?.seed ? { initial: req.flat.seed } : {}),
         });

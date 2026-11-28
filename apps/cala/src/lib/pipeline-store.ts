@@ -677,6 +677,7 @@ export function createPipelineStore(
             // The Final settle's visit rate (a recording's or a stream's settle; with visit workers).
             ...(discover() ? { settleVisitRate: settleVisits } : {}),
             repeatable: rep,
+            repeatableFlat: rep && speed.paceFps() > 0,
           }),
           qc,
           residual: residual(),
