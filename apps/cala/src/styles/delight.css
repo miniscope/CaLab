@@ -1,0 +1,426 @@
+/* Fun touches (`lib/delight.ts`): small moments tied to real events of a run. Every rule keys on
+   the root not being `data-fun="off"` (the one switch), and every movement sits inside
+   `prefers-reduced-motion: no-preference`; with reduced motion the moments are static (the note
+   still shows, then leaves). Colours are tokens, so each theme carries them. Nothing here moves
+   or recolours data. */
+
+/* ---- Cell-count milestones: the Cells number pops, a short note sits beside it ~2 s ---- */
+.cala-fig__count {
+  display: inline-block;
+  transform-origin: left 70%;
+}
+
+.cala-moment {
+  display: none;
+}
+
+:root:not([data-fun='off']) .cala-moment {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-muted);
+  color: var(--accent);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  vertical-align: 3px;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-fun='off']) .cala-fig__count.cala-pop {
+    animation: cala-pop 520ms cubic-bezier(0.2, 1.6, 0.4, 1) both;
+  }
+
+  :root:not([data-fun='off']) .cala-moment {
+    animation: cala-moment 2000ms ease-out both;
+  }
+}
+
+@keyframes cala-pop {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.28);
+    color: var(--accent);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes cala-moment {
+  0% {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  12% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ---- A stage just finished: its check eases in; when Extract finishes, a shimmer crosses
+   the whole track ---- */
+.cala-rail .stage-track {
+  position: relative;
+}
+
+/* The note never spills into the next figure: clipped sideways, and left out where the figure is
+   too narrow for it (the pop alone marks the moment there). */
+.cala-fig__value {
+  overflow-x: clip;
+}
+
+@container (max-width: 116px) {
+  :root:not([data-fun='off']) .cala-moment {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-fun='off']) .cala-rail[data-flash='discover'] [data-stage='discover'] svg,
+  :root:not([data-fun='off']) .cala-rail[data-flash='settle'] [data-stage='settle'] svg,
+  :root:not([data-fun='off']) .cala-rail[data-flash='all'] [data-testid='run-step'] svg {
+    animation: cala-check-in 640ms cubic-bezier(0.2, 1.4, 0.4, 1) both;
+  }
+
+  :root:not([data-fun='off']) .cala-rail[data-flash='all'] [data-stage='discover'] svg {
+    animation-delay: 0ms;
+  }
+
+  :root:not([data-fun='off']) .cala-rail[data-flash='all'] [data-stage='settle'] svg {
+    animation-delay: 160ms;
+  }
+
+  :root:not([data-fun='off']) .cala-rail[data-flash='all'] [data-stage='extract'] svg {
+    animation-delay: 320ms;
+  }
+
+  /* A glint across the segment that just finished (e.g. the footprints settled). */
+  :root:not([data-fun='off']) .cala-rail[data-flash='discover'] [data-stage='discover']::after,
+  :root:not([data-fun='off']) .cala-rail[data-flash='settle'] [data-stage='settle']::after,
+  :root:not([data-fun='off']) .cala-rail[data-flash='all'] [data-testid='run-step']::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(
+      100deg,
+      transparent 30%,
+      rgba(255, 255, 255, 0.6) 50%,
+      transparent 70%
+    );
+    background-size: 250% 100%;
+    background-repeat: no-repeat;
+    pointer-events: none;
+    animation: cala-shimmer 1100ms ease-in-out 1 both;
+  }
+
+  :root:not([data-fun='off']) .cala-rail[data-flash='all'] [data-testid='run-step']::after {
+    animation-duration: 1500ms;
+    animation-delay: 120ms;
+  }
+}
+
+@keyframes cala-check-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.3) rotate(-25deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0);
+  }
+}
+
+@keyframes cala-shimmer {
+  0% {
+    background-position: 130% 0;
+  }
+  100% {
+    background-position: -30% 0;
+  }
+}
+
+/* ---- The Cala mark: a small indicator dot after the name. While Discover runs it pulses like
+   a calcium transient (a fast rise, a slow decay); otherwise it rests. ---- */
+:root:not([data-fun='off']) .compact-header__title::after {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.35;
+  vertical-align: 0.1em;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-fun='off'])[data-cala-run='discover'] .compact-header__title::after {
+    animation: cala-calcium 2.4s infinite;
+  }
+}
+
+/* Reduced motion: the dot is lit while Discover runs, without the pulse. */
+:root:not([data-fun='off'])[data-cala-run='discover'] .compact-header__title::after {
+  opacity: 0.9;
+}
+
+@keyframes cala-calcium {
+  0% {
+    opacity: 0.3;
+    transform: scale(0.85);
+    animation-timing-function: cubic-bezier(0.3, 0, 0.6, 1);
+  }
+  7% {
+    opacity: 1;
+    transform: scale(1.35);
+    box-shadow: 0 0 6px var(--accent);
+    animation-timing-function: cubic-bezier(0.1, 0.6, 0.3, 1);
+  }
+  100% {
+    opacity: 0.3;
+    transform: scale(0.85);
+    box-shadow: 0 0 0 transparent;
+  }
+}
+
+/* ---- Hidden themes: the flourishes beyond their tokens (tokens.css, global.css). Grounds and
+   chrome only: the camera image, its display range and the data marks keep their own colours. */
+
+/* Synthwave: a horizon glow at the foot of the page, the name in a neon gradient, panels lit
+   from their edge. */
+:root[data-theme='synthwave'] body {
+  background:
+    radial-gradient(120% 60% at 50% 115%, rgba(255, 79, 216, 0.22), transparent 60%), var(--ground);
+  background-attachment: fixed;
+}
+
+:root[data-theme='synthwave'] .compact-header__title,
+:root[data-theme='synthwave'] .app-header__title {
+  background: linear-gradient(90deg, #ff6ad5, #ffa94d 55%, #3fd0ff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+:root[data-theme='synthwave'] .dashboard-panel,
+:root[data-theme='synthwave'] .cala-rail {
+  box-shadow:
+    0 0 0 1px rgba(255, 106, 213, 0.12),
+    0 0 18px rgba(63, 208, 255, 0.05);
+}
+
+/* Lab notebook: graph paper under everything, titles in a hand that reads like a pen, and panel
+   corners that are not quite machine-cut. */
+:root[data-theme='notebook'] body {
+  background-color: var(--ground);
+  background-image:
+    linear-gradient(rgba(74, 110, 160, 0.09) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(74, 110, 160, 0.09) 1px, transparent 1px);
+  background-size: 20px 20px;
+  background-attachment: fixed;
+}
+
+:root[data-theme='notebook'] .compact-header__title,
+:root[data-theme='notebook'] .app-header__title {
+  font-family: 'Bradley Hand', 'Segoe Print', 'Chalkboard SE', 'Comic Neue', cursive;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--accent);
+}
+
+:root[data-theme='notebook'] .dashboard-panel,
+:root[data-theme='notebook'] .cala-rail {
+  border-radius: 7px 4px 8px 3px / 4px 8px 3px 7px;
+  border-color: color-mix(in srgb, var(--ink-1) 35%, transparent);
+}
+
+:root[data-theme='notebook'] .stage-track__seg {
+  border-radius: 4px 2px 5px 2px / 2px 5px 2px 4px;
+}
+
+/* ---- Header controls (`ThemeMenu`) ---- */
+.cala-theme-menu {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.cala-fun-toggle[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+.cala-fun-toggle[aria-pressed='false'] {
+  color: var(--ink-3);
+}
+
+.cala-choir-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .cala-choir-stop svg {
+    animation: cala-sway 1.6s ease-in-out infinite;
+  }
+
+  .cala-mark--found {
+    animation: cala-found 900ms cubic-bezier(0.3, 1.6, 0.4, 1);
+  }
+}
+
+@keyframes cala-sway {
+  0%,
+  100% {
+    transform: rotate(-8deg);
+  }
+  50% {
+    transform: rotate(8deg) translateY(-1px);
+  }
+}
+
+@keyframes cala-found {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(1.25) rotate(-4deg);
+  }
+  60% {
+    transform: scale(0.95) rotate(2deg);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ---- Empty states with a little life ---- */
+.cala-neuron {
+  display: none;
+}
+
+:root:not([data-fun='off']) .cala-neuron {
+  display: block;
+  overflow: visible;
+}
+
+.cala-neuron__ink {
+  stroke: currentColor;
+  stroke-width: 1.4;
+  opacity: 0.55;
+}
+
+.cala-neuron__soma {
+  fill: var(--accent-muted);
+  stroke: currentColor;
+  stroke-width: 1.4;
+  opacity: 0.8;
+}
+
+.cala-neuron__nucleus {
+  fill: currentColor;
+  opacity: 0.35;
+}
+
+/* The soma's calcium glow: at rest it is faint; with motion it fires now and then. */
+.cala-neuron__glow {
+  fill: var(--accent);
+  opacity: 0.12;
+}
+
+/* On the camera's dark ground the sketch takes the same light grey as the line under it. */
+.cala-fov__empty .cala-neuron {
+  color: #e4e4e4;
+}
+
+.cala-fov__empty .cala-neuron__ink {
+  opacity: 0.8;
+}
+
+.cala-neuron--drop {
+  margin: 0 auto var(--space-2);
+  color: var(--ink-3);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-fun='off']) .cala-neuron__glow {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: cala-soma 3.2s infinite;
+  }
+
+  :root:not([data-fun='off']) .drop-zone:hover .cala-neuron__glow {
+    animation-duration: 1.1s;
+  }
+}
+
+@keyframes cala-soma {
+  0%,
+  62% {
+    opacity: 0.1;
+    transform: scale(1);
+  }
+  66% {
+    opacity: 0.75;
+    transform: scale(1.3);
+  }
+  100% {
+    opacity: 0.1;
+    transform: scale(1);
+  }
+}
+
+.cala-qc-empty {
+  margin: var(--space-4) var(--space-3);
+  color: var(--ink-2);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+/* ---- Smooth transitions: a tab's panel fades in when shown; a stage row eases its colours
+   when its state changes. Short, and none with reduced motion. ---- */
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-fun='off']) .cala-side-tabs__panel {
+    animation: cala-fade-in 180ms ease-out;
+  }
+
+  :root:not([data-fun='off']) .cala-step,
+  :root:not([data-fun='off']) .cala-stepline {
+    transition:
+      background-color 360ms ease,
+      border-color 360ms ease,
+      color 360ms ease,
+      opacity 360ms ease;
+  }
+}
+
+@keyframes cala-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A phone-wide header has no room for the sparkle: the choice made on a wider window holds. */
+@media (max-width: 480px) {
+  .compact-header .cala-fun-toggle {
+    display: none;
+  }
+}

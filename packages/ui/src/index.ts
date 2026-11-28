@@ -41,6 +41,7 @@ export { ThemeToggle } from './ThemeToggle.tsx';
 export type { ThemeToggleProps } from './ThemeToggle.tsx';
 export {
   THEMES,
+  BASE_THEMES,
   THEME_STORAGE_KEY,
   applyThemeChoice,
   createThemeVersion,

@@ -109,6 +109,7 @@ export function StageTrack(p: StageTrackProps): JSX.Element {
               aria-valuenow={measured() ? Math.round(fill() * 100) : undefined}
               title={s.title}
               data-state={s.state}
+              data-stage={s.id}
               data-testid={p.testid ? `${p.testid}-${s.id}` : undefined}
             >
               <Show when={lead() > 0}>

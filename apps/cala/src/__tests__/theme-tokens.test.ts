@@ -39,4 +39,20 @@ describe('cala theme tokens', () => {
       expect(dark).toContain(`${name}:`);
     }
   });
+
+  it.each(['synthwave', 'notebook'])(
+    'the hidden %s theme sets every kind colour and the accent',
+    (theme) => {
+      const set = block(css, `:root[data-theme='${theme}']`).join(';');
+      for (const name of [
+        '--accent',
+        '--accent-hover',
+        '--accent-muted',
+        '--work-read',
+        '--work-lookback',
+        '--work-idle',
+      ])
+        expect(set).toContain(`${name}:`);
+    },
+  );
 });

@@ -33,7 +33,8 @@
    validator's colour-vision, normal-vision and contrast checks on the dark surface, all pairs;
    Read frames and Look-back sit above its lightness band (lighter than a series step), and
    Background settle is told apart from Final settle by its hatch or dash. Joint id 0 takes a
-   lighter blue so the dark label ink reaches 4.5:1. */
+   lighter blue so the dark label ink reaches 4.5:1. The hidden themes (synthwave, lab notebook;
+   `tokens.css`) get their own values after these two blocks. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     --accent: #a98bd6;
@@ -54,6 +55,26 @@
   --work-lookback: #40c99a;
   --work-idle: #3a3a3a;
   --ids-0: #2a8fd6;
+}
+
+:root[data-theme='synthwave'] {
+  --accent: #ff6ad5;
+  --accent-hover: #ff93e2;
+  --accent-muted: rgba(255, 106, 213, 0.16);
+  --work-read: #8fdcff;
+  --work-lookback: #4ef0c0;
+  --work-idle: #3a2858;
+  --ids-0: #2a8fd6;
+}
+
+/* Lab notebook: blue-black fountain-pen ink for selection and focus. */
+:root[data-theme='notebook'] {
+  --accent: #2f4f86;
+  --accent-hover: #233c68;
+  --accent-muted: rgba(47, 79, 134, 0.1);
+  --work-read: #7fa6d6;
+  --work-lookback: #2f8a73;
+  --work-idle: #dcdfd5;
 }
 
 .cala-hidden-input {

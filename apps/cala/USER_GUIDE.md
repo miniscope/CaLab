@@ -93,6 +93,16 @@ theme: follow the system (the default), light or dark. The choice is remembered 
 browser. The theme changes only the page around the image: the field of view keeps its
 fixed display range and its overlay colours in both themes.
 
+**Fun touches.** The sparkle button next to the theme buttons turns the app's small
+moments on or off (on by default; remembered in this browser): a short note and a pop on
+the Cells figure when a run reaches its first, 100th and 500th cell; a glint and the ✓
+easing in when a stage finishes, and a shimmer across the stage track when Extract is
+done; the Cala name's dot pulsing like a calcium transient while Discover runs; the
+playful overlay colour schemes; and a few small surprises, which we leave for you to find.
+None of them touch the data, the image's display range or any result, nothing makes a
+sound unless you ask for it, and with the system's "reduce motion" setting the moments
+stay but nothing moves.
+
 **Run rail.** Above the tabs, one place for every live figure of the run:
 
 - **Stage track**: one bar in three segments, **Discover**, **Final settle** and
@@ -161,6 +171,11 @@ inside Discover.
   opacity = value over its own peak, no threshold) or **Both**. **Colour by** picks
   the colouring (when found, slow-loop status, QC pass/fail, peak SNR, trace fidelity,
   crosstalk, footprint error). The legend shows the scale, which is fixed per mode.
+  Under **Display**: **Live activity** lights each footprint up as its cell fires while
+  the run plays (the largest trace value since the last update, against that cell's own
+  running range), then lets it fade; it updates twice a second. **Rainbow by ID**,
+  **Neon** (glowing outlines) and **Candy** give every cell its own colour; these three
+  are hidden while Fun touches are off. They change only the overlay colours.
   **Residual heat map** lays the per-block residual (noise units, log scale) over the
   image. Click the chip again to fold the card. On a narrow image (a phone-wide
   window) the card starts folded so it does not cover the cells.

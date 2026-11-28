@@ -37,4 +37,13 @@ describe('dark theme token sets', () => {
       expect(light.has(n), n).toBe(true);
     }
   });
+
+  it.each(['synthwave', 'notebook'])(
+    'the hidden %s theme redefines exactly the tokens the dark set does',
+    (theme) => {
+      const css = read('../styles/tokens.css');
+      const dark = names(block(css, ":root[data-theme='dark']")).sort();
+      expect(names(block(css, `:root[data-theme='${theme}']`)).sort()).toEqual(dark);
+    },
+  );
 });

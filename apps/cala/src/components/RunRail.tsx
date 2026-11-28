@@ -5,7 +5,7 @@
  * figure's tooltip. The figures are sampled at most twice a second and on every change of
  * stage, never per batch.
  */
-import { createEffect, createMemo, createSignal, on, Show } from 'solid-js';
+import { createEffect, createMemo, createSignal, on, onCleanup, Show, untrack } from 'solid-js';
 import type { JSX } from 'solid-js';
 import {
   Icon,
@@ -41,6 +41,8 @@ import { fmtVisitRate, visitHoldText } from '../lib/visit-rate.ts';
 import { workByKind } from '../lib/work-meter.ts';
 import { busyWorkers, plannedSettleFrames } from '../lib/work-display.ts';
 import { createSteps } from './Steps.tsx';
+import { createMilestoneTracker, delight, milestoneNote } from '../lib/delight.ts';
+import { createTween } from '../lib/tween.ts';
 
 /** Live figures refresh at most this often, ms (2 Hz). */
 const SAMPLE_MS = 500;
@@ -219,13 +221,71 @@ export function RunRail(props: RunRailProps): JSX.Element {
     });
   });
 
+  // ---- Fun touches (`delight.ts`): all fed by the 2 Hz snapshot, none touch the run. ----
+  const fun = delight();
+  /** A cell-count milestone of this run, shown for about 2 s (null: none). */
+  const [moment, setMoment] = createSignal<{ at: number; note: string } | null>(null);
+  const milestones = createMilestoneTracker();
+  let momentTimer: ReturnType<typeof setTimeout> | undefined;
+  // The status at once (a run start may fall between two 2 Hz readings), the count at 2 Hz.
+  createEffect(
+    on(
+      () => s().status(),
+      (st) => st === 'starting' && milestones.observe(st, null),
+    ),
+  );
+  createEffect(() => {
+    const v = snap();
+    const at = milestones.observe(v.track.discover, v.cells);
+    if (at === null || !untrack(fun.on)) return;
+    setMoment({ at, note: milestoneNote(at) });
+    clearTimeout(momentTimer);
+    momentTimer = setTimeout(() => setMoment(null), 2000);
+  });
+  onCleanup(() => clearTimeout(momentTimer));
+
+  /** A stage that just finished in this session (its check eases in), or 'all' when Extract did. */
+  const [flash, setFlash] = createSignal<string | null>(null);
+  let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastStates: Record<string, string> | null = null;
+  createEffect(() => {
+    const now: Record<string, string> = {};
+    for (const st of snap().track.steps) now[st.key] = st.state;
+    const prev = lastStates;
+    lastStates = now;
+    if (!prev || !untrack(fun.on)) return;
+    const done = Object.keys(now).filter(
+      (k) => now[k] === 'done' && (prev[k] === 'running' || prev[k] === 'paused'),
+    );
+    if (done.length === 0) return;
+    setFlash(done.includes('extract') ? 'all' : done[done.length - 1]);
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => setFlash(null), 2600);
+  });
+  onCleanup(() => clearTimeout(flashTimer));
+
   const status = createMemo(() => railStatus(snap().track));
   const segments = (): StageSegment[] => stages().map((x) => x.segment);
   const stepNow = () =>
     snap().track.steps.find((v) => v.state === 'running' || v.state === 'paused')?.key ?? null;
 
+  // The Cala mark's calcium pulse while Discover runs (CSS on the root attribute).
+  createEffect(() => {
+    const running = stepNow() === 'discover' && s().status() === 'running';
+    const root = document.documentElement;
+    if (running) root.setAttribute('data-cala-run', 'discover');
+    else root.removeAttribute('data-cala-run');
+  });
+  onCleanup(() => document.documentElement.removeAttribute('data-cala-run'));
+
   return (
-    <section class="cala-rail" aria-label="Run" data-testid="run-strip" data-state={status().state}>
+    <section
+      class="cala-rail"
+      aria-label="Run"
+      data-testid="run-strip"
+      data-state={status().state}
+      data-flash={flash() ?? undefined}
+    >
       {/* The live region: only the stage word, so the 2 Hz figures are not announced. */}
       <strong class="cala-visually-hidden" role="status" data-testid="run-strip-stage">
         {status().stage}
@@ -317,7 +377,7 @@ export function RunRail(props: RunRailProps): JSX.Element {
       {/* Empty (and hidden by CSS) until the export has something to show. */}
       <div class="cala-rail__export">{props.export}</div>
       <div class="cala-rail__figs">
-        <CellsFigure snap={snap()} hist={hist()} />
+        <CellsFigure snap={snap()} hist={hist()} moment={moment()} motion={fun.motion()} />
         <SpeedFigure snap={snap()} stepNow={stepNow()} recordingFps={props.fps ?? 0} />
         <WorkersFigure snap={snap()} n={hist().workers} />
         <RefinementFigure snap={snap()} />
@@ -379,7 +439,16 @@ const dash = (): JSX.Element => (
 function CellsFigure(p: {
   snap: Snapshot;
   hist: { x: number[]; cells: number[]; cellsMax: number };
+  /** A milestone just reached (a pop and a short note), or null. */
+  moment: { at: number; note: string } | null;
+  /** Motion allowed (fun touches on, no reduced-motion preference): the number counts up. */
+  motion: boolean;
 }): JSX.Element {
+  // The shown number eases to each new 2 Hz reading; the label and tooltip keep the exact one.
+  const shown = createTween(
+    () => p.snap.cells,
+    () => p.motion,
+  );
   const conv = () => p.snap.conv;
   /**
    * After Discover only Converged stays a status (the ok check); a run that ended while cells
@@ -425,9 +494,23 @@ function CellsFigure(p: {
         </>
       }
       value={
-        <span data-testid="cells-readout" aria-label={`${p.snap.cells ?? 0} cells`}>
-          {p.snap.cells === null ? dash() : n0(p.snap.cells)}
-        </span>
+        <>
+          <span
+            class="cala-fig__count"
+            classList={{ 'cala-pop': p.moment !== null }}
+            data-testid="cells-readout"
+            aria-label={`${p.snap.cells ?? 0} cells`}
+          >
+            {p.snap.cells === null ? dash() : n0(shown() ?? p.snap.cells)}
+          </span>
+          <Show when={p.moment} keyed>
+            {(m) => (
+              <span class="cala-moment" data-testid="cells-milestone" data-at={m.at}>
+                {m.note}
+              </span>
+            )}
+          </Show>
+        </>
       }
       title={title()}
       testid="run-rail-cells"

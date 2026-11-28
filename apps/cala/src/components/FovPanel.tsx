@@ -10,7 +10,7 @@ import {
   untrack,
   type JSX,
 } from 'solid-js';
-import { DashboardPanel, SegmentedControl } from '@calab/ui';
+import { createThemeVersion, DashboardPanel, SegmentedControl } from '@calab/ui';
 import { OKABE_ITO, viridisRGB } from '@calab/ui/chart';
 import { pickCell, renderOverlay, type OverlayMode, type Rgb } from '../lib/cell-overlay.ts';
 import { NEW_CELL_FRAMES, type CellStore } from '../lib/cell-store.ts';
@@ -48,6 +48,25 @@ import {
   type ColorMode,
 } from '../lib/qc-colors.ts';
 import { createHeldRange, RangeControl, type HeldRange } from './RangeControl.tsx';
+import { createActivity } from '../lib/activity.ts';
+import { pageChoir } from '../lib/choir.ts';
+import { delight } from '../lib/delight.ts';
+import { NeuronSketch } from './NeuronSketch.tsx';
+import {
+  activityColor,
+  activityFill,
+  candyColor,
+  FUN_MODES,
+  funKey,
+  isFunMode,
+  neonColor,
+  rainbowColor,
+  type FunMode,
+} from '../lib/fun-colors.ts';
+
+/** What the overlay is coloured by: a QC mode, or a display scheme (`fun-colors.ts`). */
+type Scheme = ColorMode | FunMode;
+const schemeInfo = (m: Scheme) => (isFunMode(m) ? FUN_MODES[m] : COLOR_MODES[m]);
 
 const PLAYABLE: ReadonlySet<string> = new Set(['raw', 'preprocessed', 'corrected', 'output']);
 
@@ -153,8 +172,9 @@ const swatch = (t: number) => `rgb(${viridisRGB(t).join(',')})`;
 const fmtScale = (v: number) => (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(2));
 
 /** The chip's key: the colour-by mode's own marks, small (dots, or the ramp of a continuous mode). */
-function LegendKey(props: { mode: ColorMode }): JSX.Element {
+function LegendKey(props: { mode: Scheme }): JSX.Element {
   const dots = (): string[] | null => {
+    if (isFunMode(props.mode)) return props.mode === 'activity' ? null : funKey(props.mode);
     switch (props.mode) {
       case 'pass':
         return [PASS_RGB, FAIL_RGB, UNKNOWN_RGB].map(rgbCss);
@@ -174,7 +194,10 @@ function LegendKey(props: { mode: ColorMode }): JSX.Element {
           <span
             class="cala-fov__chip-ramp"
             style={{
-              background: `linear-gradient(90deg, ${[0, 0.5, 1].map(swatch).join(',')})`,
+              background: `linear-gradient(90deg, ${(props.mode === 'activity'
+                ? funKey('activity')
+                : [0, 0.5, 1].map(swatch)
+              ).join(',')})`,
             }}
           />
         }
@@ -190,8 +213,9 @@ function LegendKey(props: { mode: ColorMode }): JSX.Element {
 }
 
 /** The colour-by legend, on a fixed scale per mode. */
-function ColorLegend(props: { cells: CellStore; mode: ColorMode; residual: boolean }): JSX.Element {
-  const scale = createMemo(() => modeScale(props.mode, props.cells.qc()?.rows ?? []));
+function ColorLegend(props: { cells: CellStore; mode: Scheme; residual: boolean }): JSX.Element {
+  const qcMode = (): ColorMode => (isFunMode(props.mode) ? 'pass' : props.mode);
+  const scale = createMemo(() => modeScale(qcMode(), props.cells.qc()?.rows ?? []));
   const residualTop = createMemo(() => {
     const m = props.cells.qc()?.residual;
     return m ? residualMax(m) : 1;
@@ -225,7 +249,28 @@ function ColorLegend(props: { cells: CellStore; mode: ColorMode; residual: boole
         <span class="cala-legend__swatch" style={{ background: rgbCss(UNKNOWN_RGB) }} />
         unknown
       </Show>
-      <Show when={props.mode !== 'found' && props.mode !== 'pass' && props.mode !== 'status'}>
+      <Show when={props.mode === 'activity'}>
+        quiet
+        <span
+          class="cala-legend__ramp"
+          style={{ background: `linear-gradient(90deg, ${funKey('activity').join(',')})` }}
+        />
+        firing
+      </Show>
+      <Show when={props.mode === 'rainbow' || props.mode === 'neon' || props.mode === 'candy'}>
+        <For each={funKey(props.mode as FunMode)}>
+          {(c) => <span class="cala-legend__swatch" style={{ background: c }} />}
+        </For>
+        one colour per cell ID
+      </Show>
+      <Show
+        when={
+          !isFunMode(props.mode) &&
+          props.mode !== 'found' &&
+          props.mode !== 'pass' &&
+          props.mode !== 'status'
+        }
+      >
         {fmtScale(scale().lo)}
         <span
           class="cala-legend__ramp"
@@ -237,8 +282,8 @@ function ColorLegend(props: { cells: CellStore; mode: ColorMode; residual: boole
         <span class="cala-legend__swatch" style={{ background: rgbCss(UNKNOWN_RGB) }} />
         n/a
       </Show>
-      <Show when={COLOR_MODES[props.mode].note}>
-        <span class="cala-legend__note">({COLOR_MODES[props.mode].note})</span>
+      <Show when={schemeInfo(props.mode).note}>
+        <span class="cala-legend__note">({schemeInfo(props.mode).note})</span>
       </Show>
       <Show when={props.residual}>
         <span class="cala-legend__break">
@@ -276,7 +321,45 @@ export function FovPanel(props: {
   const label = (v: string) => src.views.find((x) => x.value === v)?.label ?? v;
   const [view, setView] = createSignal<string>(src.initial);
   const [overlay, setOverlay] = createSignal<OverlayMode>('contours');
-  const [mode, setMode] = createSignal<ColorMode>('pass');
+  const [mode, setMode] = createSignal<Scheme>('pass');
+  const fun = delight();
+  // The switch off hides the playful schemes; one in use falls back to QC pass / fail.
+  createEffect(() => {
+    const m = mode();
+    if (!fun.on() && isFunMode(m) && FUN_MODES[m].playful) setMode('pass');
+  });
+  const themeVersion = createThemeVersion();
+  /** Cell id to its shape slot, per geometry (the choir's positions). */
+  const slotOf = createMemo(() => {
+    const g = props.cells.geometry();
+    return new Map(g ? g.shapes.map((sh, i) => [sh.id, i] as const) : []);
+  });
+  // Live activity and the choir: one 2 Hz reading of the traces around the shown frame.
+  const activity = createActivity(
+    {
+      ids: () => props.cells.library()?.ids ?? null,
+      range: (id, a, b) => props.cells.history().range(id, a, b),
+      frame: () => src.frame() ?? props.cells.frame(),
+    },
+    () => mode() === 'activity' || fun.choir(),
+    (fired) => {
+      if (!fun.choir()) return;
+      const g = props.cells.geometry();
+      if (!g) return;
+      const slots = slotOf();
+      const notes = [];
+      for (const id of fired) {
+        const sh = g.shapes[slots.get(id) ?? -1];
+        if (!sh) continue;
+        notes.push({
+          xRel: (sh.x0 + sh.x1) / 2 / g.width,
+          yRel: (sh.y0 + sh.y1) / 2 / g.height,
+          strength: activity.level(id),
+        });
+      }
+      pageChoir().play(notes);
+    },
+  );
   const [residualMap, setResidualMap] = createSignal(false);
   /** The overlay legend card is open (else its one-line chip); first set from the image's width. */
   const [card, setCard] = createSignal(true);
@@ -406,7 +489,33 @@ export function FovPanel(props: {
       return;
     }
     const frame = props.cells.frame();
-    const m = mode();
+    const sc = mode();
+    themeVersion();
+    const synthwave = document.documentElement.getAttribute('data-theme') === 'synthwave';
+    if (isFunMode(sc)) {
+      if (sc === 'activity') activity.version();
+      const rgba = renderOverlay(g, {
+        selected,
+        mode: show,
+        glow: sc === 'neon' || synthwave,
+        color: (id) =>
+          sc === 'activity'
+            ? activityColor(activity.glow(id))
+            : sc === 'neon'
+              ? neonColor(id)
+              : sc === 'candy'
+                ? candyColor(id)
+                : rainbowColor(id),
+        fill: (id) => (sc === 'activity' ? activityFill(activity.glow(id)) : 0),
+      });
+      ctx.putImageData(
+        new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, g.width, g.height),
+        0,
+        0,
+      );
+      return;
+    }
+    const m = sc;
     const qc = m === 'found' ? null : props.cells.qc();
     const est = m === 'status' ? props.cells.established() : null;
     const mov = m === 'stillMoving' ? props.cells.stillMoving() : null;
@@ -414,6 +523,7 @@ export function FovPanel(props: {
     const rgba = renderOverlay(g, {
       selected,
       mode: show,
+      glow: synthwave,
       color: (id) => {
         if (m !== 'found')
           return qcColor(m, qc?.byId.get(id), est?.get(id), scale, viridisRGB, mov?.get(id));
@@ -547,7 +657,12 @@ export function FovPanel(props: {
             />
           </div>
           <Show when={!image() && src.emptyText?.(view())}>
-            {(text) => <p class="cala-fov__empty">{text()}</p>}
+            {(text) => (
+              <div class="cala-fov__empty">
+                <NeuronSketch size={56} />
+                <p>{text()}</p>
+              </div>
+            )}
           </Show>
           <div
             class="cala-fov__card"
@@ -565,7 +680,7 @@ export function FovPanel(props: {
               data-testid="fov-legend-chip"
             >
               <LegendKey mode={mode()} />
-              <span class="cala-fov__chip-label">{COLOR_MODES[mode()].label}</span>
+              <span class="cala-fov__chip-label">{schemeInfo(mode()).label}</span>
               <span class="cala-fov__chip-caret" aria-hidden="true">
                 {card() ? '▴' : '▾'}
               </span>
@@ -586,11 +701,20 @@ export function FovPanel(props: {
                   aria-label="Colour cells by"
                   data-testid="color-mode"
                   value={mode()}
-                  onChange={(e) => setMode(e.currentTarget.value as ColorMode)}
+                  onChange={(e) => setMode(e.currentTarget.value as Scheme)}
                 >
                   <For each={Object.keys(COLOR_MODES) as ColorMode[]}>
                     {(m) => <option value={m}>{COLOR_MODES[m].label}</option>}
                   </For>
+                  <optgroup label="Display">
+                    <For
+                      each={(Object.keys(FUN_MODES) as FunMode[]).filter(
+                        (m) => fun.on() || !FUN_MODES[m].playful,
+                      )}
+                    >
+                      {(m) => <option value={m}>{FUN_MODES[m].label}</option>}
+                    </For>
+                  </optgroup>
                 </select>
               </label>
               <ColorLegend cells={props.cells} mode={mode()} residual={residualMap()} />

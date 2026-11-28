@@ -1,7 +1,8 @@
 import type { Component } from 'solid-js';
 import { clearResultExported, leaveWarning, resultExported } from './lib/export-state.ts';
 import { createEffect, createSignal, For, on, onCleanup, Show, untrack } from 'solid-js';
-import { Badge, CompactHeader, DashboardShell, MeterRow, ThemeToggle } from '@calab/ui';
+import { Badge, CompactHeader, DashboardShell, MeterRow } from '@calab/ui';
+import { ThemeMenu } from './components/ThemeMenu.tsx';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import {
   authLoading,
@@ -1478,7 +1479,7 @@ const App: Component = () => {
               >
                 Back to project
               </button>
-              <ThemeToggle />
+              <ThemeMenu />
               <FeedbackMenu appId={__APP_ID__} />
               <CommunityAuthMenu />
             </>
@@ -1604,7 +1605,7 @@ const App: Component = () => {
                     >
                       {info().live ? 'Open another source' : 'Open another folder'}
                     </button>
-                    <ThemeToggle />
+                    <ThemeMenu />
                     <FeedbackMenu appId={__APP_ID__} />
                     <CommunityAuthMenu />
                   </>
