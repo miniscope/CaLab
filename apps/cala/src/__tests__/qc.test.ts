@@ -18,7 +18,6 @@ import {
   parseQc,
   sortRows,
   verdict,
-  type CellQcRow,
   type ConvergencePoint,
   type EditTotals,
   type QcWire,
@@ -35,33 +34,7 @@ import {
   residualRgba,
   UNKNOWN_RGB,
 } from '../lib/qc-colors.ts';
-
-function row(over: Partial<CellQcRow>): CellQcRow {
-  return {
-    id: 1,
-    slot: 0,
-    ageFrames: 2000,
-    frames: 1200,
-    peakSnr: 10,
-    eventRate: 3,
-    projR: 0.9,
-    vif: 1.1,
-    maxOverlap: 0.2,
-    maxNeighbourR: 0.1,
-    maxNeighbourId: -1,
-    fpError: 0.1,
-    nNeighbours: 1,
-    fpLastR: 1,
-    slowFrac: 0.3,
-    zeroFrac: 0.2,
-    diffSkew: 1,
-    fpRadiusPx: 4,
-    motionR2: 0.01,
-    flags: 0,
-    pass: true,
-    ...over,
-  };
-}
+import { qcRow as row } from './qc-fixtures.ts';
 
 describe('motion R2 (trace follows motion)', () => {
   it('flags above 0.2 by value or by flag bit, never negative or NaN', () => {

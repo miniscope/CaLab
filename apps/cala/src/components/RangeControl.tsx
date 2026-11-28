@@ -1,4 +1,5 @@
 import { createSignal, untrack, type JSX } from 'solid-js';
+import { Icon } from '@calab/ui';
 import { RangeHold, type DisplayPixels, type DisplayRange } from '../lib/frame-display.ts';
 
 /** Display range held for one panel; see `RangeHold`. */
@@ -49,7 +50,11 @@ export function createHeldRange(headroom = 1): HeldRange {
 
 const fmt = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toPrecision(3));
 
-/** Small lo/hi inputs and a re-fit button for one panel's held display range. */
+/**
+ * One panel's held display range as a colour bar: the grey ramp the image is drawn with, its
+ * end values as editable figures (type a value to set that end), and a re-fit icon. The range
+ * changes only by those two edits or the re-fit click, never by itself.
+ */
 export function RangeControl(props: { held: HeldRange; label: string }): JSX.Element {
   const commit = (which: 'lo' | 'hi', text: string) => {
     const r = props.held.range();
@@ -58,21 +63,25 @@ export function RangeControl(props: { held: HeldRange; label: string }): JSX.Ele
     props.held.setManual({ ...r, [which]: v });
   };
   return (
-    <span class="cala-range" data-testid="range-control">
+    <span
+      class="cala-range"
+      data-testid="range-control"
+      title="Fixed display range: values outside it clip, and it never adjusts by itself. Type an end value to change it."
+    >
       <input
         type="number"
         step="any"
-        class="cala-range__input"
+        class="cala-range__input num"
         aria-label={`${props.label} display minimum`}
         data-testid="range-lo"
         value={props.held.range() ? fmt(props.held.range()!.lo) : ''}
         onChange={(e) => commit('lo', e.currentTarget.value)}
       />
-      <span aria-hidden="true">&ndash;</span>
+      <span class="cala-range__bar" aria-hidden="true" data-testid="range-bar" />
       <input
         type="number"
         step="any"
-        class="cala-range__input"
+        class="cala-range__input num"
         aria-label={`${props.label} display maximum`}
         data-testid="range-hi"
         value={props.held.range() ? fmt(props.held.range()!.hi) : ''}
@@ -80,12 +89,13 @@ export function RangeControl(props: { held: HeldRange; label: string }): JSX.Ele
       />
       <button
         type="button"
-        class="btn-secondary btn-small"
+        class="cala-icon-btn cala-range__refit"
         data-testid="range-refit"
-        title="Fixed display range (never auto-adjusts; values outside clip). Re-fit once from the most recent frames."
+        aria-label={`Re-fit the ${props.label} range`}
+        title="Re-fit the display range once, from the most recent frames"
         onClick={() => props.held.refit()}
       >
-        Re-fit range
+        <Icon name="fit" size={14} />
       </button>
     </span>
   );

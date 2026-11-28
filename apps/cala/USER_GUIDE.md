@@ -145,16 +145,20 @@ inside Discover.
   frame minus every footprint times its trace: light that no cell explains yet. It is
   computed only while you look at it, from the next batch of a running pass once the
   model has cells.
-- **Display range**: each view has its own fixed range. It is fitted once from the
-  first frames and then held: changes in brightness stay visible. Type a range, or
-  press **Re-fit range** to fit once more from the most recent frames.
-- **Overlay** (card on the image): **Off**, **Contours** (the outline at 35% of each
+- **Display range** (toolbar, right): each view has its own fixed range, drawn as a
+  grey colour bar between its two end values. It is fitted once from the first frames
+  and then held: changes in brightness stay visible. Type an end value to change it,
+  or press the re-fit icon (four corners) to fit once more from the most recent
+  frames. Nothing else changes it.
+- **Overlay legend** (a chip in the image's top left: the colour mode's marks and
+  name). Click it to open the card: **Off**, **Contours** (the outline at 35% of each
   cell's peak, the default), **Footprints** (each footprint over its full extent,
   opacity = value over its own peak, no threshold) or **Both**. **Colour by** picks
   the colouring (when found, slow-loop status, QC pass/fail, peak SNR, trace fidelity,
   crosstalk, footprint error). The legend shows the scale, which is fixed per mode.
   **Residual heat map** lays the per-block residual (noise units, log scale) over the
-  image. The **-** button folds the card away.
+  image. Click the chip again to fold the card. On a narrow image (a phone-wide
+  window) the card starts folded so it does not cover the cells.
 - **Zoom and pan**: scroll to zoom around the pointer, or use **-**, **+**, **Fit** and
   **1:1** (one recording pixel per screen pixel). Drag to pan. While zoomed, a minimap
   in the top right shows where you are; click it to jump. Click a cell to select it.
@@ -255,17 +259,32 @@ the results written (and, for a project's plan, of its groups), and one row per 
 with its state (written ✓, running, pending, skipped, failed) and, in a Joint run, each
 boundary's health badge.
 
-**Cell tab.** The selected cell's footprint over its full extent (its own peak = 1,
-no threshold), on a **linear** or **log** scale (the log scale spans the 2.4 decades
-the stored 8-bit footprint holds). The white line is its support and the grey lines
-are its neighbours' outlines. The slider steps through the footprint's versions. Next
-to it are the QC verdict and numbers. The **Trace** / **Demixing** switch picks the
-view below: **Trace** shows the whole session as an overview with a live detail
-window that takes the rest of the tab's height; **Demixing** shows the overlapping
-neighbours. The arrows step through the cells by id.
+**Cell tab.** From top to bottom:
 
-**The other tabs.** **QC** (the cell table: click a row to select the cell; its sort
-and filter stay while you look at other tabs), **History** (see below), and under **More**:
+- The selected cell's **footprint** over its full extent (its own peak = 1, no
+  threshold), on a **linear** or **log** scale (the log scale spans the 2.4 decades the
+  stored 8-bit footprint holds). The white line is its support and the grey lines are
+  its neighbours' outlines. The slider steps through the footprint's versions. Next to
+  it: the QC verdict (one status mark and a short label, with the reasons), where the
+  cell sits, and the frame at which it was found.
+- Its **QC metrics as bullet bars**, each on a fixed range; where a rule has a
+  threshold, a tick marks it: peak SNR (log scale 1 to 100, tick at the pass level 5),
+  neighbour r (tick at 0.8, the pair level), motion R² (tick at 0.2, the motion flag),
+  then trace fidelity, crosstalk (vif) and max overlap (no threshold). Footprint error
+  and events per minute have no absolute scale, so they are figures only. A grey dash
+  means not measured yet.
+- The **Trace** / **Demixing** switch picks the view below: **Trace** shows the whole
+  session as an overview with a live detail window that takes the rest of the tab's
+  height. The frames before the cell was found are shaded grey on both. **Demixing**
+  shows the overlapping neighbours.
+
+The arrows step through the cells by id. With no cell selected, the tab lists the
+cells with the highest peak SNR, each with its status mark and SNR bar; click one to
+select it.
+
+**The other tabs.** **QC** (the cell table, see
+[Reading the quality-control indicators](#reading-the-quality-control-indicators); click
+a row to select the cell; its sort, filter and columns stay while you look at other tabs), **History** (see below), and under **More**:
 **Correlation** (the
 pairwise trace correlation against distance plot; see below), **Flat field**,
 **Timing** (per-stage times and the slow loop's counters), **Raw file** (scrub the
@@ -515,8 +534,16 @@ no new cells appear.
   library per minute, over the last two minutes. The rate of new cells is shown but
   never blocks this. It says nothing about cells Cala cannot see.
 
-**QC tab.** One row per cell, failing cells first. A cell is **not measured
-yet** until it has about a minute of trace history. The pass/fail rule is: peak SNR of
+**QC tab.** At the top, a bar splits the cells into **pass**, **fail** and **not
+measured**; the buttons under it carry the counts and filter the table (click the
+active one again, or **All**, to show every cell; a click on the bar's part does the
+same). One row per cell, failing cells first: the cell id with its status mark (a
+dot: pass, a diamond: fail, a ring: not measured), its peak SNR as a bar with the pass
+threshold tick, then four key columns: **Flag** (why it is flagged: low SNR,
+duplicate?, pair, motion), neighbour r (with a link to that neighbour), trace fidelity
+(proj r) and motion R². **Columns ▾** adds the others (vif, footprint error, events
+per minute, age, still moving, slow-loop status). Figures are right-aligned. A cell is
+**not measured yet** until it has about a minute of trace history. The pass/fail rule is: peak SNR of
 at least 5, and not the weaker of two overlapping cells whose traces correlate above
 0.8. During Discover the peak SNR is read on each cell's last minute of trace (in
 seconds, at the recording's frame rate). After Extract, it is

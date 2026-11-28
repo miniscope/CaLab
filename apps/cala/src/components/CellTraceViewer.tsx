@@ -93,6 +93,32 @@ function boundaryPlugin(marks: () => readonly BoundaryMark[]): uPlot.Plugin {
   };
 }
 
+/** Fill of the frames before the cell was found: a neutral grey that reads on both themes. */
+export const BEFORE_FOUND_FILL = 'rgba(128, 128, 128, 0.2)';
+
+/**
+ * Shades the plot from time 0 to `until()` (seconds) under the trace: the
+ * frames before the cell was found. Draws nothing when `until()` is null.
+ */
+function beforeFoundPlugin(until: () => number | null): uPlot.Plugin {
+  return {
+    hooks: {
+      drawClear: (u) => {
+        const t = until();
+        if (t === null) return;
+        const x0 = Math.max(u.bbox.left, u.valToPos(0, 'x', true));
+        const x1 = Math.min(u.bbox.left + u.bbox.width, u.valToPos(t, 'x', true));
+        if (x1 <= x0) return;
+        const ctx = u.ctx;
+        ctx.save();
+        ctx.fillStyle = BEFORE_FOUND_FILL;
+        ctx.fillRect(x0, u.bbox.top, x1 - x0, u.bbox.height);
+        ctx.restore();
+      },
+    },
+  };
+}
+
 const SERIES: uPlot.Series[] = [{}, { label: 'trace', stroke: OKABE_ITO.vermillion, width: 1.25 }];
 
 /** Frames the video may lag the processed frame under smooth playback (about three batches). */
@@ -143,9 +169,26 @@ export function CellTraceViewer(props: {
   }
   const markerTime = () =>
     props.markerFrame === null || props.markerFrame === undefined ? null : props.markerFrame / fs();
+  /**
+   * `foundTime()` as of the last `data` evaluation. The chart's draw hooks read this copy, not
+   * `props.id`: a draw can run after the cell is deselected, when the selection is stale.
+   */
+  let drawnFoundTime: number | null = null;
+  /** When the cell was found, seconds; null when unknown or found at the first frame. */
+  const foundTime = () => {
+    const f = props.cells.firstSeen(props.id);
+    return f === undefined || !(f > 0) ? null : f / fs();
+  };
   // Read when the chart draws (a data change redraws it, see `data`).
   /* eslint-disable solid/reactivity */
+  // A memo of the component, like `span`: an inline conditional in the prop would make a memo
+  // inside the overview's own effect, which can read the selection after it went stale.
+  const beforeFoundZones = createMemo(() => {
+    const t = foundTime();
+    return t === null ? undefined : [{ startTime: 0, endTime: t, color: BEFORE_FOUND_FILL }];
+  });
   const plugins = [
+    beforeFoundPlugin(() => drawnFoundTime),
     markerPlugin(markerTime),
     boundaryPlugin(() =>
       (props.boundaries ?? []).map((f) => ({
@@ -216,7 +259,8 @@ export function CellTraceViewer(props: {
   );
 
   const data = createMemo((): uPlot.AlignedData => {
-    markerTime(); // new data redraws the chart, and with it the marker
+    markerTime(); // new data redraws the chart, and with it the marker and the shading
+    drawnFoundTime = foundTime();
     props.cells.tick();
     const [s, e] = view();
     const retained = span();
@@ -253,6 +297,16 @@ export function CellTraceViewer(props: {
             {' '}
             &middot; <span style={{ color: OKABE_ITO.blue }}>|</span> footprint version
           </Show>
+          <Show when={foundTime() !== null}>
+            {' '}
+            &middot;{' '}
+            <span
+              class="cala-trace-before-found"
+              style={{ background: BEFORE_FOUND_FILL }}
+              aria-hidden="true"
+            />{' '}
+            before the cell was found
+          </Show>
         </span>
       </div>
       <Show
@@ -265,6 +319,7 @@ export function CellTraceViewer(props: {
           zoomStart={view()[0]}
           zoomEnd={view()[1]}
           onZoomChange={onZoom}
+          highlightZones={beforeFoundZones()}
         />
         <p class="cala-muted cala-hint" data-testid="cell-trace-history-note">
           Whole-session overview: min/max envelope.{' '}

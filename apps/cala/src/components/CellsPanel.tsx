@@ -1,11 +1,13 @@
-import { createEffect, createMemo, createSignal, on, Show, type JSX } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from 'solid-js';
 import type { BoundarySeverity } from '../lib/boundary-flags.ts';
-import { SegmentedControl } from '@calab/ui';
+import { HelpTip, Meter, SegmentedControl } from '@calab/ui';
 import { viridisRGB } from '@calab/ui/chart';
 import { summarize, type CellStore, type Summary } from '../lib/cell-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { CellTraceViewer } from './CellTraceViewer.tsx';
-import { CellQcSummary, DemixView } from './CellQcView.tsx';
+import { CellMetricBars, CellQcSummary, DemixView } from './CellQcView.tsx';
+import { QcDot } from './QcDot.tsx';
+import { metricText, qcMetric, qcStatus, topBySnr } from '../lib/qc-view.ts';
 import { SidePanel } from './SidePanel.tsx';
 
 function fmt(s: Summary): string {
@@ -227,24 +229,32 @@ function SelectedCell(props: {
         />
         <div class="cala-selected__side">
           <CellQcSummary cells={c()} id={props.id} />
-          <div class="cala-muted cala-selected__facts">
+          <div class="cala-muted cala-selected__facts" data-testid="cell-facts">
             <Show when={info()} fallback={<div>No longer in the library (merged or removed).</div>}>
               {(i) => (
-                <div>
-                  centre ({i().x.toFixed(0)}, {i().y.toFixed(0)}) px, support r {i().r.toFixed(1)}{' '}
-                  px &middot; found after frame {c().firstSeen(props.id)?.toLocaleString() ?? '?'}
+                <div class="num">
+                  centre ({i().x.toFixed(0)}, {i().y.toFixed(0)}) px &middot; support r{' '}
+                  {i().r.toFixed(1)} px &middot; found at frame{' '}
+                  {c().firstSeen(props.id)?.toLocaleString() ?? '–'}
                 </div>
               )}
             </Show>
-            <Show when={inLibrary()}>
-              <div>
-                Footprint: full extent, its own peak = 1, no threshold ({props.scale}). White = its
-                support, grey = neighbours. The slider steps through its versions.
-              </div>
-            </Show>
           </div>
+          <Show when={inLibrary()}>
+            <div class="cala-selected__help">
+              <HelpTip label="About the footprint" popClass="cala-selected__help-pop">
+                <p>
+                  The footprint at its full extent, its own peak = 1, no threshold ({props.scale}{' '}
+                  scale). White = its support, grey = its neighbours. The slider steps through its
+                  versions. The bars below are its QC metrics, each on a fixed range; the tick is
+                  the rule's threshold.
+                </p>
+              </HelpTip>
+            </div>
+          </Show>
         </div>
       </div>
+      <CellMetricBars cells={c()} id={props.id} />
       {/* One view at a time, switched in place (the column's tabs are the only tab row). */}
       <SegmentedControl
         class="cala-selected__views"
@@ -277,6 +287,58 @@ function SelectedCell(props: {
           <DemixView cells={c()} id={props.id} />
         </Show>
       </div>
+    </div>
+  );
+}
+
+/** Cells the empty Cell tab lists. */
+const TOP_CELLS = 8;
+
+/**
+ * The Cell tab with nothing selected: the cells with the highest peak SNR,
+ * each a button that selects it (with its status mark and SNR bar). Reads
+ * `qc()`, a snapshot about once a second.
+ */
+function TopCells(props: { cells: CellStore }): JSX.Element {
+  const top = createMemo(() => topBySnr(props.cells.qc()?.rows ?? [], TOP_CELLS));
+  const snr = qcMetric('peakSnr');
+  return (
+    <div class="cala-top-cells" data-testid="cell-empty">
+      <p class="cala-muted cala-top-cells__lead">
+        Click a cell in the field of view or the QC table
+        <Show when={top().length > 0}>, or one of the cells with the highest SNR</Show>.
+      </p>
+      <Show when={top().length > 0}>
+        <ol class="cala-top-cells__list" data-testid="cell-top-list">
+          <For each={top()}>
+            {(r) => (
+              <li>
+                <button
+                  type="button"
+                  class="cala-top-cells__row"
+                  onClick={() => props.cells.select(r.id)}
+                  data-testid="cell-top-row"
+                >
+                  <span class="cala-top-cells__id num">
+                    <QcDot status={qcStatus(r)} />#{r.id}
+                  </span>
+                  <Meter
+                    value={r.peakSnr}
+                    min={snr.range!.min}
+                    scale={snr.range!.scale}
+                    max={snr.range!.max}
+                    target={snr.threshold}
+                    label={`Cell ${r.id} peak SNR`}
+                    format={(v) => v.toFixed(1)}
+                    size="sm"
+                  />
+                  <span class="num">{metricText(snr, r.peakSnr)}</span>
+                </button>
+              </li>
+            )}
+          </For>
+        </ol>
+      </Show>
     </div>
   );
 }
@@ -357,15 +419,7 @@ export function SelectedCellPanel(props: {
         </>
       }
     >
-      <Show
-        when={props.cells.selected()}
-        fallback={
-          <p class="cala-muted">
-            Click a cell in the field of view (or a row of the cell table) to see its footprint and
-            trace.
-          </p>
-        }
-      >
+      <Show when={props.cells.selected()} fallback={<TopCells cells={props.cells} />}>
         {(id) => (
           <SelectedCell
             cells={props.cells}
