@@ -375,6 +375,7 @@ export function QcTable(props: { cells: CellStore; state?: QcTableState }): JSX.
                       <Meter
                         value={r().peakSnr}
                         min={snr.range!.min}
+                        scale={snr.range!.scale}
                         max={snr.range!.max}
                         target={snr.threshold}
                         label={`Cell ${r().id} peak SNR`}

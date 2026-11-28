@@ -21,7 +21,7 @@ function snapshot(): QcSnapshot {
   const rows = [
     qcRow({ id: 1, peakSnr: 12 }),
     qcRow({ id: 2, peakSnr: 3, flags: FLAG_LOW_SNR, pass: false }),
-    qcRow({ id: 3, peakSnr: 30, maxNeighbourR: NaN }),
+    qcRow({ id: 3, peakSnr: 300, maxNeighbourR: NaN }),
     qcRow({ id: 4, peakSnr: NaN, flags: FLAG_UNMEASURED, pass: false }),
   ];
   return { rows, byId: new Map(rows.map((r) => [r.id, r])) } as unknown as QcSnapshot;
@@ -71,13 +71,14 @@ describe('the selected cell metric bars', () => {
     const host = mountIn(() => <CellMetricBars cells={fakeCells(snapshot())} id={3} />);
     const snr = host.querySelector('[data-testid="cell-metric-peakSnr"]')!;
     const meter = snr.querySelector('[role="meter"]')!;
-    expect(meter.getAttribute('aria-valuemin')).toBe('0');
-    expect(meter.getAttribute('aria-valuemax')).toBe('20');
+    expect(meter.getAttribute('aria-valuemin')).toBe('1');
+    expect(meter.getAttribute('aria-valuemax')).toBe('100');
     // Past the range: drawn at the end and flagged, the figure stays the true value.
     expect(meter.getAttribute('data-clamped')).toBe('over');
-    expect(snr.textContent).toContain('30.0');
+    expect(snr.textContent).toContain('300.0');
     const tick = snr.querySelector<HTMLElement>('.meter__tick')!;
-    expect(tick.style.left).toBe(`${(100 * MIN_SNR) / 20}%`);
+    // Log scale: the threshold sits at log(MIN_SNR) / log(100) of the bar.
+    expect(parseFloat(tick.style.left)).toBeCloseTo((100 * Math.log(MIN_SNR)) / Math.log(100), 3);
     // No threshold, no tick.
     expect(host.querySelector('[data-testid="cell-metric-projR"] .meter__tick')).toBeNull();
     // Not measured: a grey dash.

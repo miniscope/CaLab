@@ -81,9 +81,10 @@ describe('topBySnr', () => {
 describe('metric specs', () => {
   it('draw the rules of qc.ts as threshold ticks on the overlay scales', () => {
     expect(qcMetric('peakSnr').threshold).toBe(MIN_SNR);
-    expect(qcMetric('peakSnr').range).toEqual({
-      min: METRIC_SCALE.peakSnr.lo,
-      max: METRIC_SCALE.peakSnr.hi,
+    expect(qcMetric('peakSnr').range).toEqual({ min: 1, max: 100, scale: 'log' });
+    expect(qcMetric('projR').range).toEqual({
+      min: METRIC_SCALE.projR.lo,
+      max: METRIC_SCALE.projR.hi,
     });
     expect(qcMetric('maxNeighbourR').threshold).toBe(PAIR_R);
     expect(qcMetric('motionR2').threshold).toBe(MOTION_R2_FLAG);

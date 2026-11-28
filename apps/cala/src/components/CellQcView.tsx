@@ -86,6 +86,7 @@ export function CellMetricBars(props: { cells: CellStore; id: number }): JSX.Ele
                   label={m.label}
                   value={value(m.key)}
                   min={r().min}
+                  scale={r().scale}
                   max={r().max}
                   target={m.threshold}
                   format={(x) => x.toFixed(m.digits)}

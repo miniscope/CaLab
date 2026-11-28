@@ -2,9 +2,10 @@
  * What the Cell and QC tabs show of the QC snapshot: each cell's status, the
  * counts and filter of the QC summary, the cells listed when none is selected,
  * and the display spec of every metric (label, fixed range, threshold). Pure,
- * unit-tested. The thresholds are the pass/flag rules of `qc.ts`; the bar
+ * unit-tested. The thresholds are the pass/flag rules of `qc.ts`. The bar
  * ranges are the FOV's colour scales (`METRIC_SCALE`) so a bar and the overlay
- * colour read the same.
+ * colour read the same, except peak SNR: it spans decades across cells, so its
+ * bar is logarithmic (`SNR_BAR`) and the pass threshold stays readable.
  */
 import {
   FLAG_CORRELATED_PAIR,
@@ -83,6 +84,9 @@ export function topBySnr(rows: readonly CellQcRow[], n: number): CellQcRow[] {
     .slice(0, Math.max(0, n));
 }
 
+/** Peak SNR bar range: log scale, 1 to 100 noise units. */
+export const SNR_BAR = { min: 1, max: 100, scale: 'log' } as const;
+
 /** Metrics with a display spec. */
 export type QcMetricKey =
   | 'peakSnr'
@@ -102,7 +106,7 @@ export interface QcMetricSpec {
   /** Explanation (tooltip and "?" text). */
   help: string;
   /** Fixed bar range; absent for a metric with no absolute scale (drawn as a figure only). */
-  range?: { min: number; max: number };
+  range?: { min: number; max: number; scale?: 'linear' | 'log' };
   /** The rule's threshold, drawn as a tick; absent when no threshold separates good from bad. */
   threshold?: number;
   /** Decimals of the figure. */
@@ -116,8 +120,8 @@ export const QC_METRICS: readonly QcMetricSpec[] = [
   {
     key: 'peakSnr',
     label: 'Peak SNR',
-    help: `Peak SNR in noise units. Pass needs at least ${MIN_SNR} (the tick).`,
-    range: { min: METRIC_SCALE.peakSnr.lo, max: METRIC_SCALE.peakSnr.hi },
+    help: `Peak SNR in noise units, on a log scale from ${SNR_BAR.min} to ${SNR_BAR.max}. Pass needs at least ${MIN_SNR} (the tick).`,
+    range: SNR_BAR,
     threshold: MIN_SNR,
     digits: 1,
   },

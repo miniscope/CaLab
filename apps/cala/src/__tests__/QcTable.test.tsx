@@ -82,7 +82,7 @@ describe('QC table', () => {
     expect(first.querySelectorAll('.cala-qc-dot')).toHaveLength(1);
     expect(first.querySelector('.cala-qc-dot')!.getAttribute('aria-label')).toBe('fail');
     const meter = first.querySelector('[role="meter"]')!;
-    expect(meter.getAttribute('aria-valuemax')).toBe('20');
+    expect(meter.getAttribute('aria-valuemax')).toBe('100');
     expect(first.querySelector('.meter__tick')).not.toBeNull();
     const heads = () =>
       Array.from(host.querySelectorAll('thead th')).map((t) => t.textContent!.replace(/ [▲▼]/, ''));
