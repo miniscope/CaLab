@@ -2,6 +2,7 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  createUniqueId,
   For,
   onCleanup,
   onMount,
@@ -16,6 +17,7 @@ import { NEW_CELL_FRAMES, type CellStore } from '../lib/cell-store.ts';
 import { BG_REMOVED_HEADROOM, grayToImageData, toGray8 } from '../lib/frame-display.ts';
 import {
   FIT_VIEW,
+  legendStartsOpen,
   MAX_ZOOM,
   oneToOneZoom,
   panBy,
@@ -150,6 +152,43 @@ function foundColor(firstSeen: number | undefined, frame: number): Rgb {
 const swatch = (t: number) => `rgb(${viridisRGB(t).join(',')})`;
 const fmtScale = (v: number) => (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(2));
 
+/** The chip's key: the colour-by mode's own marks, small (dots, or the ramp of a continuous mode). */
+function LegendKey(props: { mode: ColorMode }): JSX.Element {
+  const dots = (): string[] | null => {
+    switch (props.mode) {
+      case 'pass':
+        return [PASS_RGB, FAIL_RGB, UNKNOWN_RGB].map(rgbCss);
+      case 'status':
+        return [ESTABLISHED_RGB, PROBATION_RGB, UNKNOWN_RGB].map(rgbCss);
+      case 'found':
+        return [OKABE_ITO.yellow, swatch(0.2), swatch(0.7)];
+      default:
+        return null;
+    }
+  };
+  return (
+    <span class="cala-fov__chip-key" aria-hidden="true">
+      <Show
+        when={dots()}
+        fallback={
+          <span
+            class="cala-fov__chip-ramp"
+            style={{
+              background: `linear-gradient(90deg, ${[0, 0.5, 1].map(swatch).join(',')})`,
+            }}
+          />
+        }
+      >
+        {(d) => (
+          <For each={d()}>
+            {(c) => <span class="cala-fov__chip-dot" style={{ background: c }} />}
+          </For>
+        )}
+      </Show>
+    </span>
+  );
+}
+
 /** The colour-by legend, on a fixed scale per mode. */
 function ColorLegend(props: { cells: CellStore; mode: ColorMode; residual: boolean }): JSX.Element {
   const scale = createMemo(() => modeScale(props.mode, props.cells.qc()?.rows ?? []));
@@ -239,7 +278,9 @@ export function FovPanel(props: {
   const [overlay, setOverlay] = createSignal<OverlayMode>('contours');
   const [mode, setMode] = createSignal<ColorMode>('pass');
   const [residualMap, setResidualMap] = createSignal(false);
+  /** The overlay legend card is open (else its one-line chip); first set from the image's width. */
   const [card, setCard] = createSignal(true);
+  const legendBodyId = createUniqueId();
   const [fov, setFov] = createSignal<FovView>(FIT_VIEW);
   // One fixed display range per view: switching views never re-fits. A source
   // with a fixed range per view (a saved result) is drawn with it, never fitted.
@@ -399,6 +440,7 @@ export function FovPanel(props: {
     return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
   };
   const zoomBy = (factor: number, px = 0.5, py = 0.5) => setFov((v) => zoomAt(v, factor, px, py));
+  onMount(() => setCard(legendStartsOpen(stage.getBoundingClientRect().width)));
   onMount(() => {
     // Not passive: the wheel zooms the image instead of scrolling the page.
     const onWheel = (e: WheelEvent) => {
@@ -513,7 +555,22 @@ export function FovPanel(props: {
             onPointerDown={(e) => e.stopPropagation()}
             onPointerUp={(e) => e.stopPropagation()}
           >
-            <div class="cala-fov__card-head">
+            <button
+              type="button"
+              class="cala-fov__chip"
+              aria-expanded={card()}
+              aria-controls={legendBodyId}
+              title={card() ? 'Hide the overlay settings' : 'Show the overlay legend and settings'}
+              onClick={() => setCard((v) => !v)}
+              data-testid="fov-legend-chip"
+            >
+              <LegendKey mode={mode()} />
+              <span class="cala-fov__chip-label">{COLOR_MODES[mode()].label}</span>
+              <span class="cala-fov__chip-caret" aria-hidden="true">
+                {card() ? '▴' : '▾'}
+              </span>
+            </button>
+            <div class="cala-fov__card-body" id={legendBodyId} hidden={!card()}>
               <SegmentedControl
                 options={OVERLAYS}
                 value={overlay()}
@@ -522,18 +579,6 @@ export function FovPanel(props: {
                 size="sm"
                 testid="overlay-mode"
               />
-              <button
-                type="button"
-                class="cala-icon-btn"
-                aria-expanded={card()}
-                aria-label={card() ? 'Hide overlay settings' : 'Show overlay settings'}
-                title={card() ? 'Hide colour settings' : 'Show colour settings'}
-                onClick={() => setCard((v) => !v)}
-              >
-                {card() ? '−' : '+'}
-              </button>
-            </div>
-            <div class="cala-fov__card-body" hidden={!card()}>
               <label class="cala-fov__card-row">
                 <span class="cala-fov__card-label">Colour by</span>
                 <select

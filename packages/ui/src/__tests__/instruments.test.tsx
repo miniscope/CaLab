@@ -477,7 +477,17 @@ describe('Icon', () => {
       expect(svg.querySelectorAll('path').length).toBeGreaterThan(0);
     }
     expect(ICON_NAMES).toEqual(
-      expect.arrayContaining(['pause', 'play', 'stop', 'restart', 'check', 'cross', 'info', 'gpu']),
+      expect.arrayContaining([
+        'pause',
+        'play',
+        'stop',
+        'restart',
+        'fit',
+        'check',
+        'cross',
+        'info',
+        'gpu',
+      ]),
     );
   });
 });

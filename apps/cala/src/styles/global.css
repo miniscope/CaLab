@@ -546,24 +546,60 @@
   width: auto;
 }
 
-/* Fixed display range control (lo / hi / re-fit) */
+/* Fixed display range: a grey colour bar between its end values, then the re-fit icon. */
 .cala-range {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-xs);
+  gap: var(--space-1);
   margin-left: auto;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  color: var(--ink-2);
 }
 
+/* End values read as figures; the control's border shows on hover and focus. */
 .cala-range__input {
-  width: 4.5rem;
-  padding: 1px 4px;
-  border: 1px solid var(--border-default);
+  width: 3.6rem;
+  padding: 1px 2px;
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-size: 0.75rem;
+  background: transparent;
+  color: var(--ink-1);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.cala-range__input:first-child {
+  text-align: right;
+}
+
+.cala-range__input:hover,
+.cala-range__input:focus {
+  border-color: var(--line-control);
+  background: var(--surface);
+}
+
+.cala-range__input::-webkit-inner-spin-button,
+.cala-range__input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.cala-range__bar {
+  display: inline-block;
+  width: 64px;
+  height: 8px;
+  border: 1px solid var(--line-control);
+  border-radius: 1px;
+  background: linear-gradient(90deg, #000, #fff);
+}
+
+.cala-range__refit {
+  margin-left: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Live source row on the open screen. */
