@@ -1177,6 +1177,88 @@
   max-width: 80ch;
 }
 
+/* The selected cell's QC metrics: bullet bars on fixed ranges, two columns where there is room. */
+.cala-cellqc__bars {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 2px var(--space-4);
+}
+
+.cala-cellqc__bars .meter-row {
+  grid-template-columns: 7.5rem minmax(48px, 1fr) 3.5rem;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  min-height: 20px;
+}
+
+.cala-cellqc__bars .meter-row__label {
+  color: var(--ink-2);
+}
+
+.cala-selected__help {
+  position: relative;
+}
+
+.cala-selected__help-pop {
+  top: 22px;
+  left: 0;
+}
+
+.cala-selected__help-pop p {
+  margin: 0;
+}
+
+/* The empty Cell tab: the cells with the highest SNR, each a button. */
+.cala-top-cells {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.cala-top-cells__lead {
+  margin: 0;
+}
+
+.cala-top-cells__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-width: 420px;
+}
+
+.cala-top-cells__row {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(48px, 1fr) 3rem;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 2px var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-1);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cala-top-cells__row:hover {
+  background: var(--inset);
+}
+
+.cala-top-cells__row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.cala-top-cells__row .num:last-child {
+  text-align: right;
+}
+
 .cala-footprint-zoom {
   width: 150px;
   height: 150px;
@@ -2113,4 +2195,13 @@
 /* Discover's rows have no chart: no room is kept for one. */
 .cala-step__body.cala-step__rows--discover {
   min-height: 0;
+}
+
+/* The trace's key for the shaded frames before the cell was found. */
+.cala-trace-before-found {
+  display: inline-block;
+  width: 12px;
+  height: 8px;
+  border-radius: 1px;
+  vertical-align: -1px;
 }

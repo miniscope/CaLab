@@ -14,6 +14,7 @@ import {
   type QcMetricKey,
   type QcStatus,
 } from '../lib/qc-view.ts';
+import { QC_STATUS_COLOR, QcDot } from './QcDot.tsx';
 import { STILL_MOVING_HELP, STILL_MOVING_SCALE } from '../lib/settle.ts';
 
 /** Columns the picker can show or hide; the cell and its SNR are always shown. */
@@ -117,26 +118,6 @@ const num = (v: number, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '');
 export function movingText(v: number | undefined): string {
   if (v === undefined || Number.isNaN(v)) return '';
   return v > STILL_MOVING_SCALE.hi ? `>${STILL_MOVING_SCALE.hi}` : v.toFixed(1);
-}
-
-/** Colour of a QC status on the light panel (status tokens; unmeasured is the neutral mark). */
-export const QC_STATUS_COLOR: Record<QcStatus, string> = {
-  pass: 'var(--status-ok)',
-  fail: 'var(--status-critical)',
-  unmeasured: 'var(--mark-neutral)',
-};
-
-/** One status mark: a dot (pass), a diamond (fail) or a hollow ring (not measured), with its label for assistive tech. */
-export function QcDot(props: { status: QcStatus; title?: string }): JSX.Element {
-  return (
-    <span
-      class={`cala-qc-dot cala-qc-dot--${props.status}`}
-      role="img"
-      aria-label={QC_STATUS_LABEL[props.status]}
-      title={props.title ?? QC_STATUS_LABEL[props.status]}
-      data-status={props.status}
-    />
-  );
 }
 
 const STATUSES: readonly QcStatus[] = ['pass', 'fail', 'unmeasured'];

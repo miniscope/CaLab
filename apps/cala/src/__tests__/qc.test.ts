@@ -18,7 +18,6 @@ import {
   parseQc,
   sortRows,
   verdict,
-  type CellQcRow,
   type ConvergencePoint,
   type EditTotals,
   type QcWire,

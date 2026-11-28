@@ -7,6 +7,7 @@ const chart = vi.hoisted(() => ({
   overview: null as {
     envelope: { duration: number; x: number[] };
     onZoomChange: (s: number, e: number) => void;
+    highlightZones?: { startTime: number; endTime: number }[];
   } | null,
   zoom: null as { data: () => [number[], (number | null)[]] } | null,
 }));
@@ -43,6 +44,7 @@ describe('selected cell long-recording viewer', () => {
       saved: () => false,
       history: () => h,
       frame: () => 1_000_000,
+      firstSeen: () => undefined,
     } as unknown as CellStore;
     const host = document.createElement('div');
     document.body.append(host);
@@ -69,5 +71,26 @@ describe('selected cell long-recording viewer', () => {
     expect(oldY).toEqual([null, null]);
     expect(dense).not.toHaveBeenCalled();
     for (const [, first, end] of range.mock.calls) expect(end - first).toBeLessThanOrEqual(4);
+    // No known first frame: nothing is shaded.
+    expect(chart.overview!.highlightZones).toBeUndefined();
+  });
+
+  it('shades the frames before the cell was found', () => {
+    const h = new TraceHistory(64);
+    h.push(400, 4, [7], [1, 2, 3, 4]);
+    const cells = {
+      tick: () => 0,
+      saved: () => false,
+      history: () => h,
+      frame: () => 1_000,
+      firstSeen: () => 400,
+    } as unknown as CellStore;
+    const host = document.createElement('div');
+    document.body.append(host);
+    dispose = render(() => <CellTraceViewer cells={cells} id={7} fps={20} />, host);
+    expect(chart.overview!.highlightZones).toEqual([
+      expect.objectContaining({ startTime: 0, endTime: 20 }),
+    ]);
+    expect(host.textContent).toContain('before the cell was found');
   });
 });
