@@ -133,7 +133,7 @@
   height: 20px;
   border-radius: 50%;
   background: var(--error);
-  color: white;
+  color: var(--ink-on-fill);
   font-size: 0.75rem;
   font-weight: 700;
   flex-shrink: 0;

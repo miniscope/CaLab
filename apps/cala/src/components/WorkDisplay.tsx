@@ -77,7 +77,6 @@ export function WorkerSquares(props: WorkerSquaresProps): JSX.Element {
     <div
       class="cala-work"
       classList={{ 'cala-work--dim': dim(), 'cala-work--idle': state() === 'idle' }}
-      style={{ '--kind-idle': IDLE_COLOR }}
       data-testid="work-display"
       data-state={state()}
     >

@@ -10,6 +10,7 @@ import 'uplot/dist/uPlot.min.css';
 import './chart-theme.css';
 import { wheelZoomPlugin } from './index.ts';
 import { chartAxis, hiddenTickValues } from './axis-helpers.ts';
+import { themeRedrawPlugin } from './theme-colors.ts';
 
 export interface TracePanelProps {
   /** uPlot AlignedData format: [x, y1, y2, ...] -- signal accessor for reactivity */
@@ -46,6 +47,7 @@ export function TracePanel(props: TracePanelProps) {
   const height = () => props.height ?? 150;
 
   const plugins = (): uPlot.Plugin[] => [
+    themeRedrawPlugin(),
     ...(props.disableWheelZoom ? [] : [wheelZoomPlugin()]),
     ...(props.plugins ?? []),
   ];

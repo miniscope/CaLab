@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cala</title>
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      /* Apply the stored theme choice (theme.ts in @calab/ui) before first paint. */
+      try {
+        var t = localStorage.getItem('calab-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

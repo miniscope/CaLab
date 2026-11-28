@@ -10,7 +10,13 @@
 
    Apps set their own --accent (selection and focus only). Status colours are reserved for
    status and always appear with an icon and a label. Stage hues mark the cala run stages;
-   a finished stage is its full hue plus a check mark, never the ok green. */
+   a finished stage is its full hue plus a check mark, never the ok green.
+
+   Themes: `:root` holds the light set. Each further theme is one self-contained block that
+   redefines the colour role tokens and color-scheme, selected by `data-theme` on the root
+   element (`theme.ts`). No attribute means "system": light, or the dark set when the OS
+   prefers dark. Only colour role tokens change between themes; spacing, type and radii do
+   not. Apps that are not checked in dark pin `<html data-theme="light">`. */
 
 :root {
   color-scheme: light;
@@ -52,8 +58,11 @@
   --ink-1: #1a1a1a;
   --ink-2: #5c5c5c;
   --ink-3: #6b6b6b;
-  /* Text on a saturated fill (primary button, stage segment). */
+  /* Text on a saturated fill (primary button, Discover and Final settle segments); flips with
+     the theme because the fills do. */
   --ink-on-fill: #ffffff;
+  /* Text on a bright fill (Extract orange, light series chips): dark in every theme. */
+  --ink-on-bright: #1a1a1a;
 
   /* Lines: dividers and panel edges, then control borders. */
   --line: #e6e6e6;
@@ -70,18 +79,27 @@
   --status-critical-tint: #ffe9e7;
 
   /* cala run stages: full hue (fill, done) and tint (waiting). Validated as one set with the
-     dataviz palette validator. Discover and Final settle carry white labels (>= 4.5:1),
-     Extract the text ink. Canvas code reads the same values from STAGE_HUES in palette.ts. */
+     dataviz palette validator. Canvas code resolves them from the computed style
+     (`resolveCssColor` in theme.ts), so it follows the theme. */
   --stage-discover: #1f75d7;
   --stage-discover-tint: #dceafb;
   --stage-settle: #b8407e;
   --stage-settle-tint: #f5e1eb;
   --stage-extract: #e0701f;
   --stage-extract-tint: #fbe6d8;
+  /* Label ink over each stage's full hue (>= 4.5:1). */
+  --stage-discover-ink: var(--ink-on-fill);
+  --stage-settle-ink: var(--ink-on-fill);
+  --stage-extract-ink: var(--ink-on-bright);
 
   /* Neutral marks (not text): a meter's empty track, a not-measured or neutral fill. */
   --track: #ececec;
   --mark-neutral: #8a8a8a;
+  /* Chrome floating over an image or plot (zoom bar, HUD): the surface, slightly see-through. */
+  --surface-float: rgba(255, 255, 255, 0.94);
+  /* Chart furniture: axis tick marks, and a dimmed span (a pause) over a plot. */
+  --chart-tick: rgba(0, 0, 0, 0.15);
+  --chart-dim: rgba(0, 0, 0, 0.05);
 
   /* Accent: the app's selection and focus colour. Apps override all three. */
   --accent: #2171b5;
@@ -91,6 +109,7 @@
   /* Primary action fill (near-black in every app). */
   --accent-warm: var(--ink-1);
   --accent-warm-hover: #333333;
+  --accent-warm-active: #000000;
 
   /* Status fills and borders used across the apps; status text uses the --status-* inks. */
   --warning: var(--status-warning-mark);
@@ -138,16 +157,88 @@
   --transition-slow: 0.35s ease;
 }
 
-/* Dark theme hook, on the selectors Admin uses: the OS preference unless the page sets
-   data-theme="light", or data-theme="dark" explicitly. These blocks redefine role tokens and
-   color-scheme only. They are empty: until they are filled, every app except Admin renders
-   the light values in both schemes. */
+/* Dark theme: the OS preference when the page pins no theme, or data-theme="dark". The two
+   blocks are identical (a test keeps them so). Inks are at least 4.5:1 on --surface, --ground
+   and --inset; the dark stage hues pass the dataviz palette validator as a set on the dark
+   surface. Stage labels take the dark ink on every stage hue. Apps
+   keep their own --accent; an app that runs in dark sets its dark accent in its own blocks on
+   the same two selectors. */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --ground: #111111;
+    --surface: #1a1a1a;
+    --inset: #222222;
+    --ink-1: #f0f0f0;
+    --ink-2: #b4b4b4;
+    --ink-3: #949494;
+    --ink-on-fill: #111111;
+    --line: #2e2e2e;
+    --line-control: #4a4a4a;
+    --status-ok: #3fc07a;
+    --status-ok-tint: #15301f;
+    --status-warning: #e0a030;
+    --status-warning-tint: #33270f;
+    --status-warning-mark: #e0a030;
+    --status-critical: #ef6b6b;
+    --status-critical-tint: #3a1a1a;
+    --stage-discover: #338ced;
+    --stage-discover-tint: #17304d;
+    --stage-settle: #d6609c;
+    --stage-settle-tint: #3d1f30;
+    --stage-extract: #e7782c;
+    --stage-extract-tint: #43281a;
+    --track: #333333;
+    --mark-neutral: #8a8a8a;
+    --surface-float: rgba(26, 26, 26, 0.94);
+    --chart-tick: rgba(255, 255, 255, 0.2);
+    --chart-dim: rgba(255, 255, 255, 0.06);
+    --accent-warm-hover: #d0d0d0;
+    --accent-warm-active: #bdbdbd;
+    --warning-bg: rgba(224, 160, 48, 0.12);
+    --error: #ef6b6b;
+    --error-bg: rgba(239, 107, 107, 0.1);
+    --success: #3fc07a;
+    --shadow-elevated: 0 2px 8px rgba(0, 0, 0, 0.5);
   }
 }
 
 :root[data-theme='dark'] {
+  color-scheme: dark;
+  --ground: #111111;
+  --surface: #1a1a1a;
+  --inset: #222222;
+  --ink-1: #f0f0f0;
+  --ink-2: #b4b4b4;
+  --ink-3: #949494;
+  --ink-on-fill: #111111;
+  --line: #2e2e2e;
+  --line-control: #4a4a4a;
+  --status-ok: #3fc07a;
+  --status-ok-tint: #15301f;
+  --status-warning: #e0a030;
+  --status-warning-tint: #33270f;
+  --status-warning-mark: #e0a030;
+  --status-critical: #ef6b6b;
+  --status-critical-tint: #3a1a1a;
+  --stage-discover: #338ced;
+  --stage-discover-tint: #17304d;
+  --stage-settle: #d6609c;
+  --stage-settle-tint: #3d1f30;
+  --stage-extract: #e7782c;
+  --stage-extract-tint: #43281a;
+  --track: #333333;
+  --mark-neutral: #8a8a8a;
+  --surface-float: rgba(26, 26, 26, 0.94);
+  --chart-tick: rgba(255, 255, 255, 0.2);
+  --chart-dim: rgba(255, 255, 255, 0.06);
+  --accent-warm-hover: #d0d0d0;
+  --accent-warm-active: #bdbdbd;
+  --warning-bg: rgba(224, 160, 48, 0.12);
+  --error: #ef6b6b;
+  --error-bg: rgba(239, 107, 107, 0.1);
+  --success: #3fc07a;
+  --shadow-elevated: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
 @media (prefers-reduced-motion: reduce) {

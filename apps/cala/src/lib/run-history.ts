@@ -22,6 +22,9 @@ import {
 } from './work-meter.ts';
 
 /** Motion record flag bits (crates/cala/src/motion/corrector.rs) that count as a flagged frame. */
+/** Colour of the series Okabe-Ito draws in black: the text ink, so it stays visible in every theme. */
+const INK_SERIES = 'var(--ink-1)';
+
 const MOTION_FLAG_ANOMALOUS = 2;
 const MOTION_FLAG_HELD = 4;
 const MOTION_FLAG_BRIGHTNESS_OUTLIER = 16;
@@ -184,7 +187,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'stem',
       range: [0, 2],
       rangeRule: 'ladder125',
-      color: OKABE_ITO.black,
+      color: INK_SERIES,
       digits: 2,
       hint: 'How much the sensor flat field moved at each new map: the median change in units of its own uncertainty.',
     },
@@ -301,7 +304,7 @@ const WORK_SERIES: SeriesSpec[] = [
       ['work_settle', 'Slow worker: settle answers and end settle', OKABE_ITO.reddishPurple],
       ['work_publish', 'Slow worker: publishing', OKABE_ITO.skyBlue],
       ['work_other', 'Slow worker: housekeeping, set-up and replay', OKABE_ITO.vermillion],
-      ['work_idle', 'Slow worker: idle', OKABE_ITO.black],
+      ['work_idle', 'Slow worker: idle', INK_SERIES],
       ['work_visit_busy', 'Visit workers: mean busy share', OKABE_ITO.bluishGreen],
       ['work_lookback_busy', 'Look-back worker: busy share', OKABE_ITO.orange],
     ] as const
@@ -468,7 +471,7 @@ const EXTRA: SeriesSpec[] = [
     kind: 'value',
     range: [0, 1],
     rangeRule: 'double',
-    color: OKABE_ITO.black,
+    color: INK_SERIES,
     digits: 0,
   },
 ];

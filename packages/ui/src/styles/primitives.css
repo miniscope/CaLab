@@ -298,3 +298,10 @@
   font-size: 0.85em;
   font-weight: var(--font-weight-normal);
 }
+
+/* Theme toggle: icon-only options of a small segmented control. */
+.theme-toggle .segmented__option {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+}

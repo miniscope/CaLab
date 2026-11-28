@@ -7,6 +7,8 @@
 
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount } from 'solid-js';
 import { downsampleMinMax, makeTimeAxis } from '@calab/compute';
+import { createThemeVersion } from '../theme.ts';
+import { cssToken } from './theme-colors.ts';
 
 /** A highlighted time region drawn as a background band on the minimap. */
 export interface HighlightZone {
@@ -102,6 +104,9 @@ export function TraceOverview(props: TraceOverviewProps) {
 
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, width, canvasHeight());
+    const zoomFill = cssToken('--accent-muted', 'rgba(33, 113, 181, 0.1)', canvas);
+    const zoomEdge = cssToken('--accent', 'rgb(33, 113, 181)', canvas);
+    const notch = cssToken('--surface', '#ffffff', canvas);
 
     const rows = rowData();
     const duration = totalDuration();
@@ -159,13 +164,15 @@ export function TraceOverview(props: TraceOverviewProps) {
       if (zoomEnd > rowStartTime && zoomStart < rowEndTime) {
         const hlStart = Math.max(0, (zoomStart - rowStartTime) / rowDuration) * width;
         const hlEnd = Math.min(1, (zoomEnd - rowStartTime) / rowDuration) * width;
-        ctx.fillStyle = 'rgba(33, 113, 181, 0.1)';
+        ctx.fillStyle = zoomFill;
         ctx.fillRect(hlStart, rowY, hlEnd - hlStart, ROW_HEIGHT);
 
         // Border lines for highlight
-        ctx.strokeStyle = 'rgba(33, 113, 181, 0.3)';
+        ctx.strokeStyle = zoomEdge;
+        ctx.globalAlpha = 0.4;
         ctx.lineWidth = 1;
         ctx.strokeRect(hlStart, rowY, hlEnd - hlStart, ROW_HEIGHT);
+        ctx.globalAlpha = 1;
 
         // Draggable edge grips — only drawn where the zoom boundary actually
         // falls within this row (not where the rect was clipped at the row edge).
@@ -173,15 +180,15 @@ export function TraceOverview(props: TraceOverviewProps) {
         const rightEdgeVisible = zoomEnd <= rowEndTime;
         const gripW = 3;
         const cy = rowY + ROW_HEIGHT / 2;
-        ctx.fillStyle = 'rgba(33, 113, 181, 0.7)';
+        ctx.fillStyle = zoomEdge;
         if (leftEdgeVisible) {
           ctx.fillRect(hlStart - gripW / 2, rowY, gripW, ROW_HEIGHT);
         }
         if (rightEdgeVisible) {
           ctx.fillRect(hlEnd - gripW / 2, rowY, gripW, ROW_HEIGHT);
         }
-        // White notch in each grip to hint at the drag affordance
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        // A notch in the surface colour in each grip hints at the drag affordance
+        ctx.fillStyle = notch;
         if (leftEdgeVisible) {
           ctx.fillRect(hlStart - 0.5, cy - 4, 1, 8);
         }
@@ -214,9 +221,17 @@ export function TraceOverview(props: TraceOverviewProps) {
     }
   }
 
+  const themeVersion = createThemeVersion();
   createEffect(
     on(
-      () => [props.trace, props.envelope, props.zoomStart, props.zoomEnd, props.highlightZones],
+      () => [
+        props.trace,
+        props.envelope,
+        props.zoomStart,
+        props.zoomEnd,
+        props.highlightZones,
+        themeVersion(),
+      ],
       () => draw(),
     ),
   );

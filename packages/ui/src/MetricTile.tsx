@@ -99,7 +99,7 @@ export function MetricTile(p: MetricTileProps): JSX.Element {
                 <path
                   d={sparkPath(p.x ?? [], l.values, box().x1, box().lo, box().hi)}
                   fill="none"
-                  stroke={l.color}
+                  style={{ stroke: l.color }}
                   stroke-width="1.4"
                   stroke-dasharray={l.dash}
                   vector-effect="non-scaling-stroke"

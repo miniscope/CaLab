@@ -1,4 +1,4 @@
-/* Admin styles. Shared tokens come from @calab/ui base.css (light only); this
+/* Admin styles. Shared tokens come from @calab/ui base.css (light and dark); this
    file adds dark values and the chart palette (dataviz skill, validated). */
 
 :root {
@@ -27,7 +27,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
+  :root:not([data-theme]) {
     color-scheme: dark;
     --bg-primary: #1a1a19;
     --bg-secondary: #0d0d0d;
