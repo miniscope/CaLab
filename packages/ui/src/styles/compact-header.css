@@ -69,6 +69,18 @@
   flex-shrink: 0;
 }
 
+/* Phone-wide windows: the actions wrap to a second row rather than scroll sideways. */
+@media (max-width: 560px) {
+  .compact-header {
+    flex-wrap: wrap;
+    row-gap: var(--space-xs);
+  }
+
+  .compact-header__actions {
+    flex-wrap: wrap;
+  }
+}
+
 /* Worker indicator — inline metadata badge */
 .worker-indicator {
   display: inline-flex;
