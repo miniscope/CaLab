@@ -72,6 +72,8 @@ export interface RunRailProps {
   sessions?: { label: string; items: RailSession[] } | null;
   /** Stop the Final settle now (the footprints refined so far become the final library). */
   onStopSettling?: () => void;
+  /** The export (`ExportMenu`): the rail's one primary button once there is a result. */
+  export?: JSX.Element;
 }
 
 const n0 = (v: number): string => Math.round(v).toLocaleString('en-US');
@@ -310,6 +312,8 @@ export function RunRail(props: RunRailProps): JSX.Element {
           </Show>
         </span>
       </div>
+      {/* Empty (and hidden by CSS) until the export has something to show. */}
+      <div class="cala-rail__export">{props.export}</div>
       <div class="cala-rail__figs">
         <CellsFigure snap={snap()} hist={hist()} />
         <SpeedFigure snap={snap()} stepNow={stepNow()} recordingFps={props.fps ?? 0} />
