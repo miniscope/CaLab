@@ -20,58 +20,8 @@ export const FUN_KEY = 'cala-fun';
 /** localStorage key of the unlocked hidden themes (JSON array of names). */
 export const UNLOCKED_KEY = 'cala-unlocked-themes';
 
-/** Cell counts that get a moment, with their note. */
-export const MILESTONES: readonly { at: number; note: string }[] = [
-  { at: 1, note: 'First cell!' },
-  { at: 100, note: '100 cells!' },
-  { at: 500, note: '500 cells!' },
-];
-
-/**
- * Milestones crossed going from `prev` to `next` cells, not yet in `fired` (which it updates).
- * Several crossed in one step yield all of them, highest last; the caller shows only the last.
- */
-export function crossMilestones(prev: number, next: number, fired: Set<number>): number[] {
-  const out: number[] = [];
-  for (const m of MILESTONES) {
-    if (next >= m.at && prev < m.at && !fired.has(m.at)) {
-      fired.add(m.at);
-      out.push(m.at);
-    }
-  }
-  return out;
-}
-
-/**
- * Milestones of one run's live cell count, read at the rail's 2 Hz: reset when a run starts,
- * nothing while idle or starting (the last run's library is still loaded then), and primed on
- * its first reading, so a remount mid-run or after it never replays a milestone. `observe`
- * returns the milestone to show (the highest one crossed), or null.
- */
-export function createMilestoneTracker() {
-  const fired = new Set<number>();
-  let last: number | null = null;
-  return {
-    observe(status: string, cells: number | null): number | null {
-      if (status === 'starting') {
-        fired.clear();
-        last = 0;
-        return null;
-      }
-      if (cells === null || status === 'idle') return null;
-      if (last === null) {
-        last = cells;
-        return null;
-      }
-      const crossed = crossMilestones(last, cells, fired);
-      last = cells;
-      return crossed.at(-1) ?? null;
-    },
-  };
-}
-
-export const milestoneNote = (at: number): string =>
-  MILESTONES.find((m) => m.at === at)?.note ?? `${at.toLocaleString('en-US')} cells`;
+/** Milestones moved to `soul.ts` (the run's moments); re-exported for the rail. */
+export { createMilestoneTracker, crossMilestones, MILESTONES, milestoneNote } from './soul.ts';
 
 /** The Konami code, as `KeyboardEvent.key` values (letters lower-cased). */
 export const KONAMI = [

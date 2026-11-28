@@ -5,7 +5,16 @@
  * figure's tooltip. The figures are sampled at most twice a second and on every change of
  * stage, never per batch.
  */
-import { createEffect, createMemo, createSignal, on, onCleanup, Show, untrack } from 'solid-js';
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  on,
+  onCleanup,
+  Show,
+  untrack,
+} from 'solid-js';
 import type { JSX } from 'solid-js';
 import {
   Icon,
@@ -42,7 +51,9 @@ import { workByKind } from '../lib/work-meter.ts';
 import { busyWorkers, plannedSettleFrames } from '../lib/work-display.ts';
 import { createSteps } from './Steps.tsx';
 import { createMilestoneTracker, delight, milestoneNote } from '../lib/delight.ts';
+import { clock, soul } from '../lib/soul.ts';
 import { createTween } from '../lib/tween.ts';
+import { isHot, trackEdges } from '../lib/juice.ts';
 
 /** Live figures refresh at most this often, ms (2 Hz). */
 const SAMPLE_MS = 500;
@@ -82,6 +93,8 @@ const n0 = (v: number): string => Math.round(v).toLocaleString('en-US');
 interface Snapshot {
   track: RailTrackInput & { discover: string };
   cells: number | null;
+  /** The run's key (the cell store's session; negative: no run, or a saved result). */
+  run: number;
   libraryVersion: number;
   lag: number | null;
   conv: { state: ConvergenceState; reason: string };
@@ -161,6 +174,7 @@ export function RunRail(props: RunRailProps): JSX.Element {
       },
       // Zero until the first library of a run; a dash only before any run.
       cells: c().library()?.ids.length ?? (s().status() === 'idle' ? null : 0),
+      run: c().session(),
       libraryVersion: c().version(),
       lag: lag === null || lag === undefined ? null : lag,
       conv: c().convergence(),
@@ -221,32 +235,60 @@ export function RunRail(props: RunRailProps): JSX.Element {
     });
   });
 
-  // ---- Fun touches (`delight.ts`): all fed by the 2 Hz snapshot, none touch the run. ----
+  // ---- Fun touches (`delight.ts`) and the run's moments (`soul.ts`): all fed by the 2 Hz
+  // snapshot, none touch the run. ----
   const fun = delight();
+  const life = soul();
   /** A cell-count milestone of this run, shown for about 2 s (null: none). */
   const [moment, setMoment] = createSignal<{ at: number; note: string } | null>(null);
   const milestones = createMilestoneTracker();
   let momentTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Wall-clock start of this run (null: started before this rail was mounted). */
+  let runStart: number | null = null;
   // The status at once (a run start may fall between two 2 Hz readings), the count at 2 Hz.
   createEffect(
     on(
       () => s().status(),
-      (st) => st === 'starting' && milestones.observe(st, null),
+      (st) => {
+        if (st !== 'starting') return;
+        milestones.observe(st, null, -1);
+        runStart = performance.now();
+        life.resetRun();
+      },
     ),
   );
   createEffect(() => {
     const v = snap();
-    const at = milestones.observe(v.track.discover, v.cells);
+    const at = milestones.observe(v.track.discover, v.cells, v.run);
     if (at === null || !untrack(fun.on)) return;
     setMoment({ at, note: milestoneNote(at) });
     clearTimeout(momentTimer);
-    momentTimer = setTimeout(() => setMoment(null), 2000);
+    momentTimer = setTimeout(() => setMoment(null), 2400);
+    const fps = props.fps ?? 0;
+    const into =
+      fps > 0 && v.track.processed > 0
+        ? `${clock(v.track.processed / fps)} into the recording`
+        : '';
+    life.say('milestone', milestoneNote(at), into);
   });
   onCleanup(() => clearTimeout(momentTimer));
 
+  // Converged while Discover runs: the cells stopped changing (once per run).
+  let convSaid = -1;
+  createEffect(() => {
+    const v = snap();
+    if (v.conv.state !== 'converged' || v.run < 0 || convSaid === v.run) return;
+    if (v.track.steps[0].state !== 'running' || !untrack(fun.on)) return;
+    convSaid = v.run;
+    life.say('converged', 'Converged', 'the cells have stopped changing');
+  });
+
   /** A stage that just finished in this session (its check eases in), or 'all' when Extract did. */
   const [flash, setFlash] = createSignal<string | null>(null);
+  /** A stage that just took over from the one before (its segment lights up). */
+  const [handoff, setHandoff] = createSignal<string | null>(null);
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  let handoffTimer: ReturnType<typeof setTimeout> | undefined;
   let lastStates: Record<string, string> | null = null;
   createEffect(() => {
     const now: Record<string, string> = {};
@@ -257,26 +299,47 @@ export function RunRail(props: RunRailProps): JSX.Element {
     const done = Object.keys(now).filter(
       (k) => now[k] === 'done' && (prev[k] === 'running' || prev[k] === 'paused'),
     );
+    const started = Object.keys(now).filter(
+      (k) => now[k] === 'running' && prev[k] !== 'running' && prev[k] !== 'paused',
+    );
+    if (started.length > 0 && done.length > 0) {
+      setHandoff(started[0]);
+      clearTimeout(handoffTimer);
+      handoffTimer = setTimeout(() => setHandoff(null), 1800);
+    }
     if (done.length === 0) return;
-    setFlash(done.includes('extract') ? 'all' : done[done.length - 1]);
+    const all = done.includes('extract');
+    setFlash(all ? 'all' : done[done.length - 1]);
     clearTimeout(flashTimer);
     flashTimer = setTimeout(() => setFlash(null), 2600);
+    if (all) life.showPortrait(runStart === null ? null : performance.now() - runStart);
   });
-  onCleanup(() => clearTimeout(flashTimer));
+  onCleanup(() => {
+    clearTimeout(flashTimer);
+    clearTimeout(handoffTimer);
+  });
 
   const status = createMemo(() => railStatus(snap().track));
   const segments = (): StageSegment[] => stages().map((x) => x.segment);
   const stepNow = () =>
     snap().track.steps.find((v) => v.state === 'running' || v.state === 'paused')?.key ?? null;
 
-  // The Cala mark's calcium pulse while Discover runs (CSS on the root attribute).
+  createEffect(() => life.setStage(stepNow()));
+  onCleanup(() => life.setStage(null));
+  // The Cala mark is lit while a stage runs; its heartbeat comes from the cells (`ThemeMenu`).
   createEffect(() => {
-    const running = stepNow() === 'discover' && s().status() === 'running';
+    const step = stepNow();
+    const running = step !== null && s().status() !== 'paused';
     const root = document.documentElement;
-    if (running) root.setAttribute('data-cala-run', 'discover');
+    if (running) root.setAttribute('data-cala-run', step);
     else root.removeAttribute('data-cala-run');
   });
   onCleanup(() => document.documentElement.removeAttribute('data-cala-run'));
+
+  /** Running fast (at or near the target, or a fast unpaced run): the bar runs hot. */
+  const hot = () => isHot(stepNow(), snap().speed.fps, snap().speed.target);
+  /** Where the running segment's fill ends, and each segment's right end, in track shares. */
+  const edges = createMemo(() => trackEdges(segments()));
 
   return (
     <section
@@ -285,6 +348,8 @@ export function RunRail(props: RunRailProps): JSX.Element {
       data-testid="run-strip"
       data-state={status().state}
       data-flash={flash() ?? undefined}
+      data-handoff={handoff() ?? undefined}
+      data-hot={hot() ? '' : undefined}
     >
       {/* The live region: only the stage word, so the 2 Hz figures are not announced. */}
       <strong class="cala-visually-hidden" role="status" data-testid="run-strip-stage">
@@ -316,7 +381,40 @@ export function RunRail(props: RunRailProps): JSX.Element {
           </div>
         )}
       </Show>
-      <StageTrack stages={segments()} testid="run-step" label="Run stages" />
+      <div class="cala-rail__track">
+        <StageTrack stages={segments()} testid="run-step" label="Run stages" />
+        {/* Decoration over the track: embers at the running edge, sparks where a stage ended. */}
+        <div class="cala-track-fx" aria-hidden="true">
+          <Show when={hot() && edges().lead !== null}>
+            <span class="cala-embers" style={{ left: `${(edges().lead ?? 0) * 100}%` }}>
+              <i />
+              <i />
+              <i />
+              <i />
+              <i />
+            </span>
+          </Show>
+          <Show when={flash()} keyed>
+            {(f) => (
+              <For each={f === 'all' ? edges().ends : edges().ends.filter((e) => e.id === f)}>
+                {(e, i) => (
+                  <span
+                    class="cala-burst"
+                    style={{ left: `${e.at * 100}%`, 'animation-delay': `${i() * 160}ms` }}
+                  >
+                    <i />
+                    <i />
+                    <i />
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                )}
+              </For>
+            )}
+          </Show>
+        </div>
+      </div>
       <div class="cala-rail__line">
         <span class="cala-rail__label cala-num" data-testid="pipeline-readout">
           {railLabel(snap().track)}
@@ -378,7 +476,12 @@ export function RunRail(props: RunRailProps): JSX.Element {
       <div class="cala-rail__export">{props.export}</div>
       <div class="cala-rail__figs">
         <CellsFigure snap={snap()} hist={hist()} moment={moment()} motion={fun.motion()} />
-        <SpeedFigure snap={snap()} stepNow={stepNow()} recordingFps={props.fps ?? 0} />
+        <SpeedFigure
+          snap={snap()}
+          stepNow={stepNow()}
+          recordingFps={props.fps ?? 0}
+          motion={fun.motion()}
+        />
         <WorkersFigure snap={snap()} n={hist().workers} />
         <RefinementFigure snap={snap()} />
       </div>
@@ -536,8 +639,14 @@ function SpeedFigure(p: {
   snap: Snapshot;
   stepNow: string | null;
   recordingFps: number;
+  /** Motion allowed: the figure ticks to each new reading instead of jumping. */
+  motion: boolean;
 }): JSX.Element {
   const sp = () => p.snap.speed;
+  const shownFps = createTween(
+    () => (sp().fps !== null ? Math.round(sp().fps!) : null),
+    () => p.motion,
+  );
   const targetWord = () => {
     const t = sp().target;
     return t === null ? '' : t > 0 ? `target ${n0(t)}` : 'target Max';
@@ -567,7 +676,7 @@ function SpeedFigure(p: {
           Speed <span class="cala-fig__sub">{targetWord()}</span>
         </>
       }
-      value={sp().fps !== null ? n0(sp().fps!) : dash()}
+      value={sp().fps !== null ? n0(shownFps() ?? sp().fps!) : dash()}
       unit="fps"
       title={title()}
       testid="speed-headline"

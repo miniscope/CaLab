@@ -53,6 +53,52 @@ export interface CellActivity extends ActivitySeed {
   /** Display glow 0..1. */
   glow: number;
   ticks: number;
+  /** Frame-level onset latch: a new onset needs the level to fall under `REARM` first. */
+  armed?: boolean;
+}
+
+/** After an onset, the level must fall under this share of the cell's range before the next. */
+export const REARM = ONSET / 2;
+
+/**
+ * Level 0..1 of one sample `x` of a cell: 0 within `NOISE_K` sigmas of the baseline, else its
+ * height over the baseline against the cell's range (at least twice the noise floor).
+ */
+export function levelOf(c: ActivitySeed, x: number): number {
+  const floor = NOISE_K * c.noise;
+  const h = x - c.base;
+  const span = Math.max(c.peak - c.base, 2 * floor);
+  return h <= floor || span <= 0 ? 0 : Math.min(1, h / span);
+}
+
+/**
+ * Frame offsets in `v` where the cell has an onset: its level reaches `ONSET` while armed (it
+ * re-arms below `REARM`). Updates `c.armed`. Non-finite samples are skipped.
+ */
+export function scanOnsets(c: ActivitySeed & { armed?: boolean }, v: ArrayLike<number>): number[] {
+  const out: number[] = [];
+  let armed = c.armed ?? true;
+  for (let k = 0; k < v.length; k++) {
+    const x = v[k];
+    if (!Number.isFinite(x)) continue;
+    const l = levelOf(c, x);
+    if (armed && l >= ONSET) {
+      out.push(k);
+      armed = false;
+    } else if (!armed && l < REARM) armed = true;
+  }
+  c.armed = armed;
+  return out;
+}
+
+/**
+ * Onsets of one cell over a whole trace (the session portrait's "most active cell"): its
+ * baseline, noise and peak read from the trace itself, then `scanOnsets`. 0 for too few samples.
+ */
+export function countOnsets(v: ArrayLike<number>): number {
+  const sd = seedOf(v);
+  if (!sd) return 0;
+  return scanOnsets({ ...sd }, v).length;
 }
 
 export type ActivityState = Map<number, CellActivity>;
@@ -81,6 +127,11 @@ export function stepActivity(
   ids: readonly number[],
   windowMax: (id: number) => number,
   seed: (id: number) => ActivitySeed | null = () => null,
+  /** Per-frame onsets: the cell's window samples, and where to report each onset's offset. */
+  frames?: {
+    window: (id: number) => ArrayLike<number> | null;
+    onset: (id: number, k: number) => void;
+  },
 ): number[] {
   const fired: number[] = [];
   const keep = new Set(ids);
@@ -105,11 +156,12 @@ export function stepActivity(
       }
     }
     c.ticks++;
-    const floor = NOISE_K * c.noise;
     c.peak = Math.max(v, c.base + (c.peak - c.base) * PEAK_RELAX);
-    const h = v - c.base;
-    const span = Math.max(c.peak - c.base, 2 * floor);
-    const lvl = h <= floor || span <= 0 ? 0 : Math.min(1, h / span);
+    const lvl = levelOf(c, v);
+    if (frames) {
+      const w = frames.window(id);
+      if (w) for (const k of scanOnsets(c, w)) frames.onset(id, k);
+    }
     if (lvl >= ONSET && c.level < ONSET) fired.push(id);
     c.level = lvl;
     c.glow = Math.max(c.glow * GLOW_DECAY, lvl);
@@ -136,10 +188,24 @@ export interface ActivitySource {
  * since the last tick and bumps `version()`; `onFire` gets the cells that fired. A paused or
  * stopped stream (no new frame) only lets the glow fade. Call inside a component.
  */
+/** One sampler tick, for the population figures (`soul.ts`): what was read and what fired. */
+export interface ActivityTick {
+  /** Cells that crossed `ONSET` this tick (one per cell at most). */
+  fired: number[];
+  /** Stream frame of every per-frame onset this tick (a cell may have several). */
+  onsetFrames: number[];
+  /** Cells read. */
+  cells: number;
+  /** Frames read this tick, [lo, hi) (lo === hi: nothing new on screen). */
+  lo: number;
+  hi: number;
+}
+
 export function createActivity(
   src: ActivitySource,
   active: () => boolean,
   onFire?: (ids: number[]) => void,
+  onTick?: (t: ActivityTick) => void,
 ) {
   const st = emptyActivity();
   const [version, setVersion] = createSignal(0);
@@ -152,16 +218,26 @@ export function createActivity(
       // Nothing new on screen (paused, or a jump back): fade only.
       stepActivity(st, ids, () => NaN);
       if (f !== null && (last === null || f < last)) last = f;
+      onTick?.({ fired: [], onsetFrames: [], cells: ids.length, lo: 0, hi: 0 });
     } else {
       const lo = Math.max(last + 1, f + 1 - MAX_WINDOW);
+      const windows = new Map<number, ArrayLike<number>>();
+      const win = (id: number) => {
+        let w = windows.get(id);
+        if (!w) windows.set(id, (w = src.range(id, lo, f + 1)));
+        return w;
+      };
+      const onsetFrames: number[] = [];
       const fired = stepActivity(
         st,
         ids,
-        (id) => finiteMax(src.range(id, lo, f + 1)),
+        (id) => finiteMax(win(id)),
         (id) => seedOf(src.range(id, f + 1 - SEED_FRAMES, f + 1)),
+        { window: win, onset: (_id, k) => onsetFrames.push(lo + k) },
       );
       last = f;
       if (fired.length > 0) onFire?.(fired);
+      onTick?.({ fired, onsetFrames, cells: ids.length, lo, hi: f + 1 });
     }
     setVersion((v) => v + 1);
   };

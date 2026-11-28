@@ -1301,6 +1301,7 @@ const App: Component = () => {
         width={lp.info.width}
         height={lp.info.height}
         fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
+        name={store.label()}
       />
     );
     /* eslint-disable solid/reactivity -- built once per opened recording */
