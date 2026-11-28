@@ -1,13 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createRoot, createSignal } from 'solid-js';
 import {
+  emptyProject,
   fileText,
   readIndexFile,
   readProjectFile,
   type IndexFile,
   type ProjectFile,
 } from '@calab/project';
-import { createProjectStore } from '../lib/project-store.ts';
+import { baseLayers, createProjectStore, layerWarnings } from '../lib/project-store.ts';
+import type { BaseLayer } from '../lib/param-layers.ts';
+import {
+  createIdbDraftStore,
+  createMemoryDraftStore,
+  createOpfsRunCopyStore,
+  createMemoryRunCopyStore,
+  projectKey,
+  keyName,
+  type DraftStore,
+} from '../lib/browser-store.ts';
 import type { MultiRun, MultiRunPlan, OpenedRun } from '../lib/multi-run.ts';
 import type { FrameSourceInfo } from '../lib/frame-source.ts';
 import { entriesFromFiles } from '../lib/frame-source.ts';
@@ -556,5 +567,299 @@ describe('one-session projects', () => {
     const run = await fake.plans[0].openRun(0);
     expect(run.sink.method).toBe('zip');
     expect(run.project).toBe(store.project()!.project.id);
+  });
+});
+
+describe('settings layers', () => {
+  /** An animal project whose store records every base it is given. */
+  async function layered(
+    o: {
+      granted?: boolean;
+      drafts?: DraftStore;
+      handle?: boolean;
+      files?: ReturnType<typeof animal>;
+    } = {},
+  ) {
+    const fake = fakeRunner();
+    const root = animalDir(o.granted ?? true);
+    const { entries, sessions } = o.files ?? animal();
+    const bases: BaseLayer[][] = [];
+    const store = createRoot(() =>
+      createProjectStore({
+        probe: async (s) => s.map(() => ({ info: INFO })),
+        multiRun: fake.runner,
+        version: 'test',
+        drafts: o.drafts,
+        setBase: (l) => bases.push(l),
+      }),
+    );
+    await store.open({
+      rootName: 'mouse1',
+      entries,
+      handle: o.handle === false ? null : (root as unknown as ReadDirLike),
+      sessions,
+    });
+    return { store, fake, root, bases };
+  }
+
+  it('a run of one stream gets the project defaults, the step params and its override', async () => {
+    const { store, fake, bases } = await layered();
+    store.toggle(ids[2], true);
+    store.addToPlan('separate');
+    await vi.waitFor(() => expect(store.plan()).toHaveLength(1));
+    const proj = store.project()!;
+    const withLayers: ProjectFile = {
+      ...proj,
+      defaults: { cala: { params_version: 1, params: { motion: { template_tau_s: 30 } } } },
+      sessions: proj.sessions.map((s, i) =>
+        i === 2
+          ? {
+              ...s,
+              streams: s.streams.map((x) => ({
+                ...x,
+                overrides: { cala: { scales: { cell_diameter_px: 14 } } },
+              })),
+            }
+          : s,
+      ),
+      plan: {
+        ...proj.plan,
+        steps: proj.plan.steps.map((st) => ({ ...st, params: { motion: { max_shift_px: 9 } } })),
+      },
+    };
+    const step = withLayers.plan.steps[0];
+    expect(baseLayers(withLayers, step, [ids[0]])).toEqual([
+      { tag: 'project', layer: { motion: { template_tau_s: 30 } } },
+      { tag: 'step', layer: { motion: { max_shift_px: 9 } } },
+    ]);
+    expect(baseLayers(withLayers, step, [ids[2]])).toEqual([
+      { tag: 'project', layer: { motion: { template_tau_s: 30 } } },
+      { tag: 'step', layer: { motion: { max_shift_px: 9 } } },
+      { tag: 'stream', layer: { scales: { cell_diameter_px: 14 } } },
+    ]);
+    // A Joint run (two streams) takes no stream override.
+    expect(baseLayers(withLayers, step, [ids[0], ids[2]]).map((l) => l.tag)).toEqual([
+      'project',
+      'step',
+    ]);
+    // The step's run gets its layers before its Discover starts.
+    expect(await store.startPlan()).toBe(true);
+    bases.length = 0;
+    fake.plans[0].beforeSession!(0);
+    expect(bases).toEqual([[]]);
+    expect(store.layersFor()).toEqual({ step: 'a', refs: [ids[2]] });
+  });
+
+  it('Save as project defaults and This session only write the project file and re-layer', async () => {
+    const fake = fakeRunner();
+    const root = animalDir(true);
+    const files = [
+      makeFile('0.avi', new Uint8Array(4), 'My_V4_Miniscope'),
+      makeFile('metaData.json', '{}', 'My_V4_Miniscope'),
+    ];
+    const entries = entriesFromFiles(files);
+    const sessions = discoverSessions(entries).sessions!;
+    const bases: BaseLayer[][] = [];
+    const store = createRoot(() =>
+      createProjectStore({
+        probe: async (s) => s.map(() => ({ info: INFO })),
+        multiRun: fake.runner,
+        version: 'test',
+        setBase: (l) => bases.push(l),
+      }),
+    );
+    await store.open({
+      rootName: 'My_V4_Miniscope',
+      entries,
+      handle: root as unknown as ReadDirLike,
+      sessions,
+    });
+    // The open sets the layers of its one stream (none yet).
+    expect(store.layersFor()).toEqual({ step: 'a', refs: ['.'] });
+    expect(bases.at(-1)).toEqual([]);
+    expect(await store.saveParams('project', { scales: { cell_diameter_px: 16 } })).toBe(true);
+    expect(await store.saveParams('stream', { motion: { template_tau_s: 40 } })).toBe(true);
+    const saved = savedProject(root);
+    expect(saved.defaults.cala).toEqual({
+      params_version: 1,
+      params: { scales: { cell_diameter_px: 16 } },
+    });
+    expect(saved.sessions[0].streams[0].overrides).toEqual({
+      cala: { motion: { template_tau_s: 40 } },
+    });
+    expect(bases.at(-1)).toEqual([
+      { tag: 'project', layer: { scales: { cell_diameter_px: 16 } } },
+      { tag: 'stream', layer: { motion: { template_tau_s: 40 } } },
+    ]);
+    // A value saved as a project default leaves the stream's override (the override is gone).
+    await store.saveParams('project', { motion: { template_tau_s: 50 } });
+    expect(savedProject(root).sessions[0].streams[0].overrides).toBeUndefined();
+    expect(bases.at(-1)!.map((l) => l.tag)).toEqual(['project']);
+    // Hand-written defaults keep their keys this cala does not know; unreadable ones are not
+    // written over.
+    const keep = store.project()!;
+    expect(await store.saveParams('project', { motion: { template_tau_s: 60 } })).toBe(true);
+    expect(savedProject(root).defaults.cala.params).toEqual({
+      scales: { cell_diameter_px: 16 },
+      motion: { template_tau_s: 60 },
+    });
+    expect(keep.project.id).toBe(store.project()!.project.id);
+    // Close: no layers.
+    store.close();
+    expect(bases.at(-1)).toEqual([]);
+    expect(await store.saveParams('project', {})).toBe(false);
+  });
+
+  it('warns about project params it cannot use, and uses none of a bad block', async () => {
+    const proj = emptyProject('mouse1', new Date('2026-11-28T12:00:00Z'));
+    const bad: ProjectFile = {
+      ...proj,
+      defaults: {
+        cala: { params_version: 1, params: { scales: { cell_diameter_px: -3 }, zz: 1 } },
+      },
+    };
+    expect(baseLayers(bad, null, [])).toEqual([]);
+    expect(layerWarnings(bad).join(' ')).toContain('/scales/cell_diameter_px');
+    const newer: ProjectFile = { ...proj, defaults: { cala: { params_version: 9, params: {} } } };
+    expect(layerWarnings(newer)[0]).toContain('params version 9');
+    const unknown: ProjectFile = {
+      ...proj,
+      defaults: { cala: { params_version: 1, params: { zz: 1 } } },
+    };
+    expect(layerWarnings(unknown)[0]).toContain('/zz is not a cala setting');
+  });
+
+  it('without a folder the draft project file is kept in browser storage and comes back', async () => {
+    const drafts = createMemoryDraftStore();
+    // The same files at each open, as a folder picked again after a reload.
+    const files = animal();
+    const first = await layered({ drafts, handle: false, files });
+    first.store.toggle(ids[1], true);
+    first.store.addToPlan('separate');
+    await vi.waitFor(async () =>
+      expect((await drafts.get(first.store.storeKey()!))?.plan.steps).toHaveLength(1),
+    );
+    // A reload: the folder is picked again; the plan and its id come back.
+    const again = await layered({ drafts, handle: false, files });
+    expect(again.store.plan().map((s) => s.streams)).toEqual([[ids[1]]]);
+    expect(again.store.project()!.project.id).toBe(first.store.project()!.project.id);
+    expect(again.store.fromDraft()).toBe(true);
+    expect(again.store.warnings().join(' ')).toContain('browser storage');
+  });
+
+  it('a draft newer than the folder file wins; writing to the folder drops it', async () => {
+    const drafts = createMemoryDraftStore();
+    const files = animal();
+    // No readwrite: the edit stays a draft.
+    const first = await layered({ drafts, granted: false, files });
+    first.store.toggle(ids[0], true);
+    first.store.addToPlan('separate');
+    const key = first.store.storeKey()!;
+    await vi.waitFor(async () => expect(await drafts.get(key)).not.toBeNull());
+    const again = await layered({ drafts, granted: false, files });
+    expect(again.store.plan()).toHaveLength(1);
+    // An older draft (another project id) is not used over a folder's file.
+    const root = animalDir(true);
+    await root.put(
+      'calab-project/calab-project.json',
+      fileText('project', emptyProject('mouse1', new Date('2026-11-29T00:00:00Z'))),
+    );
+    const fake = fakeRunner();
+    const { entries, sessions } = files;
+    const store = createRoot(() =>
+      createProjectStore({
+        probe: async (s) => s.map(() => ({ info: INFO })),
+        multiRun: fake.runner,
+        version: 'test',
+        drafts,
+      }),
+    );
+    await store.open({ rootName: 'mouse1', entries, handle: root as never, sessions });
+    expect(store.plan()).toHaveLength(0);
+    expect(store.fromDraft()).toBe(false);
+    // Written to the folder (granted): the draft goes.
+    await drafts.put(key, {
+      ...store.project()!,
+      project: { ...store.project()!.project, updated: '2099-01-01T00:00:00.000Z' },
+    });
+    await store.refresh();
+    expect(store.fromDraft()).toBe(true);
+    store.toggle(ids[2], true);
+    store.addToPlan('separate');
+    await vi.waitFor(async () => expect(await drafts.get(key)).toBeNull());
+  });
+
+  it('a run into a zip keeps its run file in browser storage until it ends; a crash offers it', async () => {
+    const drafts = createMemoryDraftStore();
+    const runCopies = createMemoryRunCopyStore();
+    const { entries, sessions } = animal();
+    const make = () => {
+      const fake = fakeRunner();
+      const store = createRoot(() =>
+        createProjectStore({
+          probe: async (s) => s.map(() => ({ info: INFO })),
+          multiRun: fake.runner,
+          version: 'test',
+          drafts,
+          runCopies,
+        }),
+      );
+      return {
+        store,
+        fake,
+        open: () => store.open({ rootName: 'mouse1', entries, handle: null, sessions }),
+      };
+    };
+    const a = make();
+    await a.open();
+    a.store.toggle(ids[0], true);
+    a.store.addToPlan('separate');
+    await vi.waitFor(() => expect(a.store.plan()).toHaveLength(1));
+    expect(await a.store.startPlan()).toBe(true);
+    const plan = a.fake.plans[0];
+    const run = await plan.openRun(0);
+    expect(run.sink.method).toBe('zip');
+    await plan.onProgress!({
+      run: runDoc(plan, run, 'planned'),
+      folder: run.folder,
+      sink: run.sink,
+    });
+    const key = a.store.storeKey()!;
+    expect((await runCopies.list(key)).map((r) => r.id)).toEqual([run.id]);
+    // The tab dies here. The next open offers the run file, and the step is stopped, not stuck.
+    const b = make();
+    await b.open();
+    expect(b.store.savedRuns().map((r) => r.id)).toEqual([run.id]);
+    expect(b.store.plan().map((s) => s.status)).toEqual(['stopped']);
+    await b.store.forgetSavedRun(run.id);
+    expect(b.store.savedRuns()).toEqual([]);
+    expect(await runCopies.list(key)).toEqual([]);
+    // A run that ends drops its copy.
+    expect(await b.store.startPlan()).toBe(true);
+    const p2 = b.fake.plans[0];
+    const r2 = await p2.openRun(0);
+    await p2.onProgress!({ run: runDoc(p2, r2, 'planned'), folder: r2.folder, sink: r2.sink });
+    expect(await runCopies.list(key)).toHaveLength(1);
+    await p2.onProgress!({ run: runDoc(p2, r2, 'finished'), folder: r2.folder, sink: r2.sink });
+    expect(await runCopies.list(key)).toEqual([]);
+  });
+});
+
+describe('browser storage', () => {
+  it('keys a project by its folder and streams; names a key for OPFS', () => {
+    expect(projectKey('m', ['b', 'a'])).toBe('m|a,b');
+    expect(keyName('m|a,b')).toMatch(/^p[0-9a-f]{8}$/);
+    expect(keyName('m|a,b')).not.toBe(keyName('m|a,c'));
+  });
+
+  it('an IndexedDB draft store is inert without IndexedDB; OPFS copies without OPFS', async () => {
+    const d = createIdbDraftStore(undefined);
+    await d.put('k', emptyProject('m', new Date(0)));
+    expect(await d.get('k')).toBeNull();
+    await d.remove('k');
+    const c = createOpfsRunCopyStore(undefined);
+    await c.save('k', 'r', '{}');
+    expect(await c.list('k')).toEqual([]);
+    await c.remove('k', 'r');
   });
 });

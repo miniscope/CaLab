@@ -303,3 +303,216 @@ test('Cala: a 3-session project runs a Joint step and a Separate step into calab
 
   rmSync(base, { recursive: true, force: true });
 });
+
+/** A recording folder `<base>/<name>` of the cell movie. */
+function writeRecording(base: string, name: string): string {
+  const folder = join(base, name);
+  mkdirSync(folder, { recursive: true });
+  const movie = cellMovie(96, 96, FRAMES);
+  writeFileSync(
+    join(folder, '0.avi'),
+    buildAvi({ width: 96, height: 96, frames: FRAMES, payload: (f) => movie.payload(f) }),
+  );
+  writeFileSync(join(folder, 'metaData.json'), `{"frameRate":"20FPS","framesPerFile":${FRAMES}}`);
+  return folder;
+}
+
+/** Set a number field of the sheet (Advanced opened first) and leave it. */
+async function setField(page: Page, pointer: string, value: string): Promise<void> {
+  const sheet = page.getByTestId('run-settings');
+  const advanced = sheet.getByTestId('params-advanced');
+  if (!(await advanced.evaluate((el) => (el as HTMLDetailsElement).open)))
+    await advanced.locator('summary').click();
+  const input = sheet.locator(`#param-${pointer.slice(1).replace(/\//g, '-')}`);
+  await input.fill(value);
+  await input.press('Tab');
+}
+
+const badge = (page: Page, pointer: string) =>
+  page.getByTestId(`param-source-${pointer.slice(1).replace(/\//g, '-')}`);
+
+/** The only run of an unzipped download: its folder and run file. */
+function onlyRun(tree: string) {
+  const index = json(join(tree, 'calab-index.json'));
+  expect(index.runs).toHaveLength(1);
+  const folder = (index.runs[0] as { folder: string }).folder;
+  return { folder, run: json(join(tree, folder, 'calab-run.json')) };
+}
+
+test("Cala: project defaults and a session's own value reach the run file; its export loads as a config", async ({
+  page,
+}) => {
+  test.setTimeout(900_000);
+  const base = mkdtempSync(join(tmpdir(), 'cala-layers-e2e-'));
+  const folder = writeRecording(base, 'My_V4_Miniscope');
+  await noFileSystemAccess(page);
+  const downloads: Download[] = [];
+  page.on('download', (d) => downloads.push(d));
+
+  await page.goto('Cala/');
+  await page.getByTestId('folder-input').setInputFiles(folder);
+  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
+  // Two values saved as the project's defaults; then this session's own diameter over one.
+  await setField(page, '/scales/cell_diameter_px', '12');
+  await setField(page, '/motion/template_tau_s', '30');
+  await expect(badge(page, '/scales/cell_diameter_px')).toHaveText('set');
+  await page.getByTestId('config-save-defaults').click();
+  await expect(badge(page, '/scales/cell_diameter_px')).toHaveText('project');
+  await expect(badge(page, '/motion/template_tau_s')).toHaveText('project');
+  await setField(page, '/scales/cell_diameter_px', '14');
+  await page.getByTestId('config-session-only').check();
+  await expect(page.getByTestId('config-save-defaults')).toHaveText('Save for this session');
+  await page.getByTestId('config-save-defaults').click();
+  await expect(badge(page, '/scales/cell_diameter_px')).toHaveText('stream');
+  await expect(page.getByTestId('config-save-defaults')).toBeDisabled();
+
+  // Without the File System Access API a reload keeps them (browser storage): the same folder
+  // picked again.
+  await page.reload();
+  await page.getByTestId('folder-input').setInputFiles(folder);
+  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
+  await page.getByTestId('params-advanced').locator('summary').click();
+  await expect(badge(page, '/scales/cell_diameter_px')).toHaveText('stream');
+  await expect(badge(page, '/motion/template_tau_s')).toHaveText('project');
+
+  await page.getByTestId('run-start').click();
+  await expect.poll(() => downloads.length, { timeout: 360_000, intervals: [2000] }).toBe(1);
+  const out = join(base, 'unzipped');
+  extract(unzip(readFileSync((await downloads[0].path())!)), out);
+  const tree = join(out, 'calab-project');
+  const project = json(join(tree, 'calab-project.json'));
+  expect(project.defaults.cala).toEqual({
+    params_version: 1,
+    params: { scales: { cell_diameter_px: 12 }, motion: { template_tau_s: 30 } },
+  });
+  expect(project.sessions[0].streams[0].overrides).toEqual({
+    cala: { scales: { cell_diameter_px: 14 } },
+  });
+  const { folder: runFolder, run } = onlyRun(tree);
+  expect(run.config.requested).toMatchObject({
+    scales: { cell_diameter_px: 14 },
+    motion: { template_tau_s: 30 },
+  });
+  expect(run.config.sources).toMatchObject({
+    '/scales/cell_diameter_px': 'stream',
+    '/motion/template_tau_s': 'project',
+  });
+  expect(run.config.resolved.scales.cell_diameter_px).toBe(14);
+  expect(run.config.resolved.motion.template_tau_s).toBe(30);
+
+  // A new recording takes that run's settings from its export: what it asked for, and on
+  // request what its data set (the frame rate).
+  const other = writeRecording(base, 'Other_Miniscope');
+  await page.goto('Cala/');
+  await page.getByTestId('folder-input').setInputFiles(other);
+  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
+  await expect(page.getByTestId('config-count')).toHaveText('All defaults');
+  await page
+    .getByTestId('config-load-input')
+    .setInputFiles(join(tree, runFolder, 'cala-export.npz'));
+  await expect(page.getByTestId('config-file')).toContainText('cala-export.npz');
+  await page.getByTestId('params-advanced').locator('summary').click();
+  await expect(badge(page, '/scales/cell_diameter_px')).toHaveText('file');
+  await expect(badge(page, '/motion/template_tau_s')).toHaveText('file');
+  await expect(page.getByTestId('config-count')).toHaveText('2 set');
+  await page.getByTestId('config-pin-derived').check();
+  await expect(page.getByTestId('config-count')).toHaveText('3 set');
+  await page.getByTestId('config-pin-derived').uncheck();
+  await expect(page.getByTestId('config-count')).toHaveText('2 set');
+  await page.getByTestId('run-start').click();
+  await expect.poll(() => downloads.length, { timeout: 360_000, intervals: [2000] }).toBe(2);
+  const out2 = join(base, 'unzipped2');
+  extract(unzip(readFileSync((await downloads[1].path())!)), out2);
+  const second = onlyRun(join(out2, 'calab-project')).run;
+  expect(second.config.sources).toEqual({
+    '/scales/cell_diameter_px': 'file:cala-export.npz',
+    '/motion/template_tau_s': 'file:cala-export.npz',
+  });
+  rmSync(base, { recursive: true, force: true });
+});
+
+test('Cala: without the File System Access API a reload keeps the plan, and a run cut short leaves its run file', async ({
+  page,
+}) => {
+  test.setTimeout(300_000);
+  const base = mkdtempSync(join(tmpdir(), 'cala-reload-e2e-'));
+  const animal = join(base, 'mouse1');
+  writeAnimal(animal);
+  await noFileSystemAccess(page);
+  await page.goto('Cala/');
+  await page.getByTestId('folder-input').setInputFiles(animal);
+  await expect(page.getByTestId('project-row')).toHaveCount(3);
+  await selectRow(page, 0);
+  await selectRow(page, 1);
+  await page.getByTestId('plan-chain').click();
+  await selectRow(page, 2);
+  await page.getByTestId('plan-separate').click();
+  await expect(page.getByTestId('plan-group')).toHaveCount(2);
+  // The draft project file in IndexedDB holds the plan.
+  const draftSteps = () =>
+    page.evaluate(
+      () =>
+        new Promise<number>((resolve) => {
+          const req = indexedDB.open('calab-drafts', 1);
+          req.onsuccess = () => {
+            const all = req.result.transaction('projects').objectStore('projects').getAll();
+            all.onsuccess = () =>
+              resolve(
+                Math.max(
+                  0,
+                  ...(all.result as { project: { plan: { steps: unknown[] } } }[]).map(
+                    (r) => r.project.plan.steps.length,
+                  ),
+                ),
+              );
+            all.onerror = () => resolve(-1);
+          };
+          req.onerror = () => resolve(-2);
+        }),
+    );
+  await expect.poll(draftSteps).toBe(2);
+
+  await page.reload();
+  await page.getByTestId('folder-input').setInputFiles(animal);
+  await expect(page.getByTestId('plan-group')).toHaveCount(2);
+  await expect(page.getByTestId('plan-group').nth(0)).toContainText('Joint: 2 sessions');
+  await expect(page.getByTestId('project-warning').first()).toContainText('browser storage');
+
+  // A run starts (its run file is written before its first frame), then the tab goes away.
+  await page.getByTestId('plan-start').click();
+  await expect(page.getByTestId('session-run-root')).toContainText('calab-project/runs/');
+  // Its copy in browser storage (OPFS) is there before the first frame.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(async () => {
+          const root = await navigator.storage.getDirectory();
+          const top = await root.getDirectoryHandle('calab-saved-runs').catch(() => null);
+          if (!top) return 0;
+          let n = 0;
+          for await (const d of (
+            top as unknown as { values(): AsyncIterable<FileSystemDirectoryHandle> }
+          ).values())
+            for await (const f of (d as unknown as { values(): AsyncIterable<unknown> }).values())
+              if (f) n++;
+          return n;
+        }),
+      { timeout: 60_000 },
+    )
+    .toBe(1);
+  await page.reload();
+  await page.getByTestId('folder-input').setInputFiles(animal);
+  await expect(page.getByTestId('saved-run')).toHaveCount(1);
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByTestId('saved-run-download').click(),
+  ]);
+  const run = JSON.parse(readFileSync((await download.path())!, 'utf8'));
+  expect(run.format).toBe('calab-run');
+  expect(['planned', 'running']).toContain(run.run.status);
+  expect(run.run.plan.kind).toBe('joint');
+  // The step that was running is stopped, not stuck: both steps can start again.
+  await expect(page.getByTestId('plan-group')).toHaveCount(2);
+  await expect(page.getByTestId('plan-start')).toBeEnabled();
+  rmSync(base, { recursive: true, force: true });
+});

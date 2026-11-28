@@ -69,6 +69,11 @@ export interface MultiRunPlan {
   openRun: (index: number) => Promise<OpenedRun>;
   /** The plan step run `index` was made for (null: none). */
   planRef?: (index: number) => RunPlanRef | null;
+  /**
+   * Called before a session's Discover starts (Joint: once, with 0; Separate: with each
+   * session's index), so the project's settings layers of that run are in place.
+   */
+  beforeSession?: (index: number) => void;
   /** For the panel: where results go. */
   locationLabel: string;
   /**
@@ -355,6 +360,7 @@ export function createMultiRun(deps: MultiRunDeps) {
       setCurrent(next);
       setExported(false);
     });
+    p.beforeSession?.(next);
     await deps.openOne(p.sessions[next], next);
     setSessionOpen(true);
   }
@@ -462,6 +468,7 @@ export function createMultiRun(deps: MultiRunDeps) {
       setError(errMsg(err));
       return;
     }
+    p.beforeSession?.(0);
     if (p.kind === 'joint') await deps.openJoint(p.sessions);
     else await deps.openOne(p.sessions[0], 0);
     setSessionOpen(true);

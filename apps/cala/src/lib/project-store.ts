@@ -8,6 +8,7 @@
  * `ProjectWriter` keeps the files in line as each run file is written.
  */
 import { createEffect, createSignal, on, untrack } from 'solid-js';
+import { checkLayer, deleteAt, layerEntries, mergeLayer } from '@calab/core';
 import {
   addSteps,
   afterStep,
@@ -41,6 +42,11 @@ import {
   type ProjectTextFile,
   type ScannedStream,
 } from '@calab/project';
+import { CALA_PARAMS_VERSION } from '../params/schema.ts';
+import { PARAMS_SCHEMA } from './config-file.ts';
+import type { BaseLayer } from './param-layers.ts';
+import type { ParamsLayer } from './run-params.ts';
+import { projectKey, type DraftStore, type RunCopyStore, type SavedRun } from './browser-store.ts';
 import type { FolderEntry, SessionInput } from './frame-source.ts';
 import type { SessionProbeResult } from '../workers/frame-types.ts';
 import type { MultiRun, OpenedRun, PlannedSession, RunProgress } from './multi-run.ts';
@@ -72,6 +78,7 @@ import {
 import { rememberProject, type RecentStore } from './recent-projects.ts';
 import { CALA_APP } from './run-file.ts';
 import { errMsg } from './errors.ts';
+import { downloadBlob } from './export.ts';
 
 /** What `openProject` opens: a picked folder (or files), or a live stream. */
 export interface ProjectOpen {
@@ -111,8 +118,82 @@ export interface ProjectDeps {
   probe(sessions: SessionInput[]): Promise<SessionProbeResult[]>;
   multiRun: MultiRun;
   recent?: RecentStore;
+  /** The draft project file while it is not in a folder (IndexedDB; absent: none kept). */
+  drafts?: DraftStore;
+  /** Copies of the run files that go into zips (OPFS; absent: none kept). */
+  runCopies?: RunCopyStore;
+  /** The settings layers of the run that starts next (`ParamLayers.setBase`). */
+  setBase?: (layers: BaseLayer[]) => void;
   version: string;
   now?: () => Date;
+}
+
+/** A params block of the project file as a layer: its schema fields only (null: not a params object). */
+function knownLayer(v: unknown): ParamsLayer | null {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
+  const c = checkLayer(PARAMS_SCHEMA, v);
+  return c.errors.length > 0 ? null : (c.known as ParamsLayer);
+}
+
+/** The project's cala defaults (empty when it sets none, or they cannot be used). */
+function calaDefaults(p: ProjectFile): ParamsLayer {
+  const d = p.defaults[CALA_APP];
+  if (!d || d.params_version !== CALA_PARAMS_VERSION) return {};
+  return knownLayer(d.params) ?? {};
+}
+
+/** The stream `ref` of the project file (undefined: not in it). */
+function streamOf(p: ProjectFile, ref: string) {
+  for (const s of p.sessions)
+    for (const x of s.streams) if (streamRef(s.id, x.id) === ref) return x;
+  return undefined;
+}
+
+/**
+ * The settings layers of a run of `refs` made for `step` (`docs/projects.md`, "Settings layers"): the project's defaults,
+ * the step's params, and the stream's overrides when the run has that one stream. Empty layers
+ * are left out.
+ */
+export function baseLayers(
+  p: ProjectFile,
+  step: Pick<PlanStep, 'params'> | null,
+  refs: readonly string[],
+): BaseLayer[] {
+  const out: BaseLayer[] = [
+    { tag: 'project', layer: calaDefaults(p) },
+    { tag: 'step', layer: knownLayer(step?.params) ?? {} },
+  ];
+  if (refs.length === 1)
+    out.push({
+      tag: 'stream',
+      layer: knownLayer(streamOf(p, refs[0])?.overrides?.[CALA_APP]) ?? {},
+    });
+  return out.filter((l) => Object.keys(l.layer).length > 0);
+}
+
+/** What in the project file's params blocks cannot be used (for the project's warnings). */
+export function layerWarnings(p: ProjectFile): string[] {
+  const out: string[] = [];
+  const check = (v: unknown, where: string) => {
+    if (v === undefined) return;
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+      out.push(`${where} is not a settings object; not used.`);
+      return;
+    }
+    const c = checkLayer(PARAMS_SCHEMA, v);
+    for (const e of c.errors) out.push(`${where}: ${e.pointer} ${e.message} Not used.`);
+    for (const u of c.unknown) out.push(`${where}: ${u.pointer} is not a cala setting; not used.`);
+  };
+  const d = p.defaults[CALA_APP];
+  if (d && d.params_version !== CALA_PARAMS_VERSION)
+    out.push(
+      `The project's cala defaults are params version ${d.params_version}; this cala reads ${CALA_PARAMS_VERSION}, so they are not used.`,
+    );
+  else if (d) check(d.params, 'Project defaults');
+  for (const s of p.plan.steps) check(s.params, `Plan step ${s.id}`);
+  for (const s of p.sessions)
+    for (const x of s.streams) check(x.overrides?.[CALA_APP], `${streamRef(s.id, x.id)} overrides`);
+  return out;
 }
 
 /**
@@ -135,14 +216,34 @@ export class ProjectWriter {
       now: () => Date;
       readOnly?: boolean;
       onChange?: () => void;
+      /**
+       * The project file is not in a folder (`project`: keep it in browser storage), or it was
+       * just written to one (null: drop what is kept).
+       */
+      mirror?: (project: ProjectFile | null) => Promise<void>;
+      /** A run file that went into a zip: keep its copy (`text`), or drop it (null: it ended). */
+      runCopy?: (id: string, text: string | null) => Promise<void>;
     },
   ) {}
+
+  private async mirror(onDisk: boolean): Promise<void> {
+    if (this.o.readOnly || !this.o.mirror) return;
+    try {
+      await this.o.mirror(onDisk ? null : this.project);
+    } catch {
+      // Browser storage is a convenience: a failure never stops a save.
+    }
+  }
 
   /** Write both files (the project file only when it is ours to change). */
   async save(): Promise<void> {
     this.o.onChange?.();
-    if (!this.o.dir) return;
+    if (!this.o.dir) {
+      await this.mirror(false);
+      return;
+    }
     await writeProject(await this.o.dir(), this.o.readOnly ? null : this.project, this.index);
+    await this.mirror(true);
   }
 
   /** The folder of a new run, named `id` (a suffix is added when taken). */
@@ -178,6 +279,15 @@ export class ProjectWriter {
       if (!this.o.readOnly)
         await p.sink.writeProjectText(PROJECT_FILE, fileText('project', this.project));
       await p.sink.writeProjectText(INDEX_FILE, fileText('index', this.index));
+      await this.mirror(false);
+      // The zip downloads when the run ends: until then its run file is kept in the browser.
+      const st = p.run.run.status;
+      const ended = st === 'finished' || st === 'stopped';
+      try {
+        await this.o.runCopy?.(p.run.run.id, ended ? null : fileText('run', p.run));
+      } catch {
+        // Best effort, as above.
+      }
     } else await this.save();
   }
 }
@@ -245,6 +355,28 @@ export function createProjectStore(deps: ProjectDeps) {
     existing: boolean;
   } | null>(null);
   let writer: ProjectWriter | null = null;
+  /** The run whose settings layers are in force: its plan step and streams (null: none). */
+  const [layersFor, setLayersFor] = createSignal<{ step: string | null; refs: string[] } | null>(
+    null,
+  );
+  /** Run files kept in browser storage from runs that never ended (a crash, a closed tab). */
+  const [savedRuns, setSavedRuns] = createSignal<SavedRun[]>([]);
+  /** The project file came from browser storage at this open (it was not in the folder). */
+  const [fromDraft, setFromDraft] = createSignal(false);
+  /** This project's key in browser storage (null: none open). */
+  const storeKey = (): string | null => {
+    const o = opened();
+    if (!o) return null;
+    // Each stream with its first video's size and date: two recordings in folders of the same
+    // name (every Miniscope's is `My_V4_Miniscope`) do not share a draft.
+    return projectKey(
+      o.live ? `${o.rootName}@${o.live}` : o.rootName,
+      rows().map((r) => {
+        const f = (r.candidate.series.files[0]?.entry as { file?: File } | undefined)?.file;
+        return f ? `${r.planned.stream}:${f.size}:${f.lastModified}` : r.planned.stream;
+      }),
+    );
+  };
 
   const location = () => {
     const custom = resultsHandle();
@@ -333,14 +465,53 @@ export function createProjectStore(deps: ProjectDeps) {
         setProject(writer!.project);
         setIndex(writer!.index);
       },
+      mirror: async (proj) => {
+        const key = storeKey();
+        if (!key || !deps.drafts) return;
+        if (proj) await deps.drafts.put(key, proj);
+        else await deps.drafts.remove(key);
+      },
+      runCopy: async (id, text) => {
+        const key = storeKey();
+        if (!key || !deps.runCopies) return;
+        if (text !== null) await deps.runCopies.save(key, id, text);
+        else await deps.runCopies.remove(key, id);
+      },
     });
+  }
+
+  /**
+   * The draft of this project kept in browser storage, when it is newer than `p` (the folder's
+   * file, or a new one): it holds a plan, defaults or overrides not yet written to the folder.
+   */
+  async function newerDraft(p: ProjectFile, inFolder: boolean): Promise<ProjectFile | null> {
+    const key = storeKey();
+    if (!key || !deps.drafts) return null;
+    let d: ProjectFile | null;
+    try {
+      d = await deps.drafts.get(key);
+    } catch {
+      return null;
+    }
+    if (!d) return null;
+    if (!inFolder) return d;
+    return d.project.id === p.project.id && d.project.updated > p.project.updated ? d : null;
+  }
+
+  /** Point the settings layers at a run of `refs` for plan step `stepId`. */
+  function applyLayers(stepId: string | null, refs: readonly string[]): void {
+    setLayersFor({ step: stepId, refs: [...refs] });
+    const p = writer?.project;
+    if (!p) return;
+    const step = stepId ? (p.plan.steps.find((s) => s.id === stepId) ?? null) : null;
+    deps.setBase?.(baseLayers(p, step, refs));
   }
 
   /**
    * Read the project file and the run files; rebuild the index; bring both in line with the scan.
    * Resolves whether the folder had a project file.
    */
-  async function load(): Promise<boolean> {
+  async function load(fresh = false): Promise<boolean> {
     const o = opened()!;
     const files = await readFiles();
     const notes: string[] = [];
@@ -367,6 +538,27 @@ export function createProjectStore(deps: ProjectDeps) {
         );
       }
     }
+    if (!readOnly()) {
+      const draft = await newerDraft(p, pf !== undefined);
+      if (draft) {
+        p = draft;
+        changed = true;
+        notes.push(
+          pf
+            ? 'Changes not yet written to the project folder were restored from browser storage.'
+            : 'The project file was restored from browser storage (this browser cannot write it to the folder before a run).',
+        );
+      }
+      setFromDraft(draft !== null);
+    }
+    // At an open no run is going: a step left running (a crash, a closed tab) has stopped.
+    if (fresh && !readOnly()) {
+      for (const st of p.plan.steps)
+        if (st.status === 'running') {
+          p = { ...p, plan: stepStopped(p.plan, st.id) };
+          changed = true;
+        }
+    }
     const rec = reconcileStreams(p, scanned());
     if (JSON.stringify(rec.project.sessions) !== JSON.stringify(p.sessions)) changed = true;
     p = rec.project;
@@ -376,8 +568,11 @@ export function createProjectStore(deps: ProjectDeps) {
       notes.push(
         `Missing session folder${rec.missing.length === 1 ? '' : 's'}: ${rec.missing.join(', ')}.`,
       );
+    notes.push(...layerWarnings(p));
     const found = findRunFiles(files);
     for (const f of found.refused) notes.push(`${f.path}: ${f.error}`);
+    // Only at an open: on a refresh a zip run of this page may be going, its copy current.
+    if (fresh) await loadSavedRuns(new Set(found.runs.map((r) => r.run.run.id)));
     const idx = rebuildIndex(found.runs, indexStreams(p, rows()), t);
     if (changed) p = { ...p, project: { ...p.project, updated: t.toISOString() } };
     writer = makeWriter(p, idx);
@@ -409,7 +604,50 @@ export function createProjectStore(deps: ProjectDeps) {
     } else {
       setProject(writer.project);
       setDirty(true);
+      if (!readOnly() && deps.drafts) {
+        const key = storeKey();
+        if (key) await deps.drafts.put(key, writer.project).catch(() => {});
+      }
     }
+  }
+
+  /**
+   * The run files kept in browser storage for this project whose run never ended, except those
+   * the folder already holds (`known`). Ended runs' copies are dropped.
+   */
+  async function loadSavedRuns(known: ReadonlySet<string>): Promise<void> {
+    const key = storeKey();
+    if (!key || !deps.runCopies) {
+      setSavedRuns([]);
+      return;
+    }
+    const keep: SavedRun[] = [];
+    for (const r of await deps.runCopies.list(key).catch(() => [] as SavedRun[])) {
+      let status: unknown;
+      try {
+        status = (JSON.parse(r.text) as { run?: { status?: unknown } }).run?.status;
+      } catch {
+        status = null;
+      }
+      if (known.has(r.id) || status === 'finished' || status === 'stopped')
+        await deps.runCopies.remove(key, r.id).catch(() => {});
+      else keep.push(r);
+    }
+    setSavedRuns(keep);
+  }
+
+  /** Download a kept run file (`calab-run.json` of that run). */
+  function downloadSavedRun(id: string): void {
+    const r = savedRuns().find((x) => x.id === id);
+    if (!r) return;
+    downloadBlob(`${id}_calab-run.json`, new Blob([r.text], { type: 'application/json' }));
+  }
+
+  /** Forget a kept run file. */
+  async function forgetSavedRun(id: string): Promise<void> {
+    const key = storeKey();
+    setSavedRuns(savedRuns().filter((r) => r.id !== id));
+    if (key) await deps.runCopies?.remove(key, id).catch(() => {});
   }
 
   async function open(o: ProjectOpen): Promise<void> {
@@ -423,6 +661,9 @@ export function createProjectStore(deps: ProjectDeps) {
     setProject(null);
     setIndex(null);
     setSummary(null);
+    setSavedRuns([]);
+    setLayersFor(null);
+    deps.setBase?.([]);
     writer = null;
     try {
       if (o.live) {
@@ -468,7 +709,12 @@ export function createProjectStore(deps: ProjectDeps) {
           }),
         );
       }
-      const existing = await load();
+      const existing = await load(true);
+      const one = single();
+      if (one && !error()) {
+        const ref = one.planned.stream;
+        applyLayers(stepFor([ref], writer!.project.plan, 'separate')?.id ?? null, [ref]);
+      }
       setSummary({
         sessions: projectStreamRefs(writer!.project).length,
         live: o.live !== undefined,
@@ -502,6 +748,9 @@ export function createProjectStore(deps: ProjectDeps) {
   }
 
   function close(): void {
+    setLayersFor(null);
+    deps.setBase?.([]);
+    setSavedRuns([]);
     setOpened(null);
     setRows([]);
     setProject(null);
@@ -576,6 +825,67 @@ export function createProjectStore(deps: ProjectDeps) {
     } catch (err) {
       setError(errMsg(err));
     }
+  }
+
+  /**
+   * Save settings into the project file (inside a click): `project` merges `layer` into the
+   * project's cala defaults; `stream` into the overrides of the stream whose run the settings
+   * are for (one stream only). A value saved as a default leaves that stream's override, so it
+   * holds there too. Resolves false when there is nowhere to save.
+   */
+  async function saveParams(scope: 'project' | 'stream', layer: ParamsLayer): Promise<boolean> {
+    const ctx = layersFor();
+    if (!writer || readOnly() || !ctx) return false;
+    const ref = ctx.refs.length === 1 ? ctx.refs[0] : null;
+    if (scope === 'stream' && !ref) return false;
+    // Defaults this cala cannot read (another params version, a value out of range) are never
+    // written over.
+    const d = writer.project.defaults[CALA_APP];
+    if (
+      scope === 'project' &&
+      d &&
+      (d.params_version !== CALA_PARAMS_VERSION || knownLayer(d.params) === null)
+    ) {
+      setError("The project's cala defaults cannot be read here, so they are not changed.");
+      return false;
+    }
+    setError(null);
+    // Without permission the file waits in browser storage until a run writes it.
+    if (canWrite()) await grant();
+    const ptrs = [...layerEntries(PARAMS_SCHEMA, layer).keys()];
+    const withOverride = (
+      p: ProjectFile,
+      f: (o: Record<string, unknown>) => Record<string, unknown>,
+    ): ProjectFile => ({
+      ...p,
+      sessions: p.sessions.map((s) => ({
+        ...s,
+        streams: s.streams.map((x) => {
+          if (streamRef(s.id, x.id) !== ref) return x;
+          const { [CALA_APP]: mine, ...others } = x.overrides ?? {};
+          const next = f((mine as Record<string, unknown> | undefined) ?? {});
+          const overrides = Object.keys(next).length > 0 ? { ...others, [CALA_APP]: next } : others;
+          const { overrides: _old, ...rest } = x;
+          return Object.keys(overrides).length > 0 ? { ...rest, overrides } : rest;
+        }),
+      })),
+    });
+    await edit((p) => {
+      if (scope === 'stream') return withOverride(p, (o) => mergeLayer(o, layer));
+      const merged = mergeLayer(p.defaults[CALA_APP]?.params ?? {}, layer);
+      const next: ProjectFile = {
+        ...p,
+        defaults: {
+          ...p.defaults,
+          [CALA_APP]: { params_version: CALA_PARAMS_VERSION, params: merged },
+        },
+      };
+      return ref
+        ? withOverride(next, (o) => ptrs.reduce((acc, ptr) => deleteAt(acc, ptr), o))
+        : next;
+    });
+    applyLayers(ctx.step, ctx.refs);
+    return true;
   }
 
   async function setCurrent(session: string, run: string): Promise<void> {
@@ -710,6 +1020,8 @@ export function createProjectStore(deps: ProjectDeps) {
       // The sink's root is the full path (`<animal>/calab-project/runs/<id>`).
       locationLabel: canWrite() ? '' : 'a zip download: ',
       planRef: () => ({ id: planId, step: step.id, kind: step.kind }),
+      beforeSession: (i) =>
+        applyLayers(step.id, step.kind === 'joint' ? step.streams : [step.streams[i]]),
       openRun: () => w.openRun(runIdFor(now(), CALA_APP, new Set(w.index.runs.map((r) => r.id)))),
       onProgress: (p) => w.record(p),
     });
@@ -803,6 +1115,16 @@ export function createProjectStore(deps: ProjectDeps) {
     runStreams,
     single,
     summary,
+    saveParams,
+    /** This project's key in browser storage (drafts, run copies). */
+    storeKey,
+    /** The run the settings layers are for (null: none): its step and streams. */
+    layersFor,
+    /** The project file came from browser storage at this open. */
+    fromDraft,
+    savedRuns,
+    downloadSavedRun,
+    forgetSavedRun,
     setCurrent,
     open,
     refresh,

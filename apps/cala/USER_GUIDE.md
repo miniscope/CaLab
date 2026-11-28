@@ -191,8 +191,9 @@ are grouped:
   horizon and the QC pass rule. Each field's **?** explains it and gives its range; a value
   outside the range is refused with a message under the field.
 
-A setting that is not its default shows where it came from (**set** here, or **file**) and a
-↺ to return it to its default. Settings set elsewhere in the app (Speed, the Background settle
+A setting that is not its default shows where it came from (**set** here, **file**, or
+**project**, **step** or **stream** for a value the project gives: see below) and a ↺ to
+return it to its default. Settings set elsewhere in the app (Speed, the Background settle
 cap, the flat field, the QC pass/fail export filter) are not repeated in the sheet.
 
 **Config files.** **Save config…** writes the values you set (not the defaults) and where
@@ -205,6 +206,21 @@ default. An example is in `apps/cala/docs/example-config.json`; every setting, i
 its range are in `crates/cala/schema/cala-params.schema.json`. The export's run record
 holds what was asked for, where each value came from, and the cell diameter in pixels the
 run used.
+
+**Load config…** also takes a run's `calab-run.json` or a past export (`.npz`): it loads
+what that run **asked for**, not what its data set, so the new run measures the frame
+rate (and, later, the cell size) from its own data. **Also pin what the data set** loads
+the measured values too, as settings (an exact repeat). **Config (.json)** in the Export
+menu saves a run's settings as a config file.
+
+**Project defaults.** **Save as project defaults** moves the values you set (and a loaded
+file's) into the project: every run of the project starts from them, in this and later
+visits. Tick **This session only** first to save them for this session alone (**Save for
+this session**). A run's settings are, from lowest to highest: the defaults, the project's
+defaults, the plan step's settings, the session's own, a loaded config file, then what you
+set in the sheet. They are kept in `calab-project.json` (`defaults`, each stream's
+`overrides`, each step's `params`; it can be edited by hand) and the run file names the
+layer each value came from.
 
 A live stream has no sheet: connecting starts it. A project's run plan starts from its
 **Start plan** button and has no sheet either.
@@ -524,6 +540,13 @@ The project's table:
   (and a permission prompt) reopens one. Other browsers pick the folder again; there each
   run downloads a zip of its run folder (with the project file), to unpack into the
   picked folder.
+- **Saved in browser storage.** Until the project file can be written to the folder (before
+  the first Run's permission, or always in Firefox and Safari), the plan, the project
+  defaults and the session settings are kept in the browser, and come back when the same
+  folder is opened again, even after a reload. In Firefox and Safari a run's file is also
+  kept in the browser until its zip downloads: if the tab closes or crashes during the run,
+  the next open of the project offers **Download run file**, and the step it was running
+  stays in the plan.
 
 Saved libraries (applying one session's cells to another) and matching cells across
 Separate runs come in later versions. Details:
