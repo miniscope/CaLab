@@ -70,6 +70,8 @@ export interface PageFlags {
   smoothOff: boolean;
   /** `?debug&fwait`: a factor run waits for its last window. */
   fwait: boolean;
+  /** `?debug&detlog` (not `=0`): the slow worker keeps the determinism log (`lib/detlog.ts`). */
+  detlog: boolean;
   /** `?live=URL` (null: absent). */
   live: string | null;
 }
@@ -110,6 +112,7 @@ export function parsePageFlags(search: string | URLSearchParams): PageFlags {
     paceFps: debug && p.has('pacefps') ? Number(p.get('pacefps')) : null,
     smoothOff: debug && p.get('smooth') === '0',
     fwait: debug && p.has('fwait'),
+    detlog: debug && p.has('detlog') && p.get('detlog') !== '0',
     live: p.get('live'),
   };
 }
@@ -133,6 +136,7 @@ export const KNOWN_FLAGS = [
   'cbacklog',
   'fextract',
   'fwait',
+  'detlog',
   'gpucheck',
   'needfirst',
   'smooth',
@@ -185,6 +189,8 @@ function inEffect(name: string, p: URLSearchParams): boolean {
       return f.frameExtract;
     case 'fwait':
       return f.fwait;
+    case 'detlog':
+      return f.detlog;
     case 'gpucheck':
       return f.gpucheck > 0;
     case 'needfirst':

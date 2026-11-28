@@ -8,6 +8,7 @@
  * of an earlier session are dropped.
  */
 
+import type { DetLogRow } from '../lib/detlog.ts';
 import type { WorkStatus } from '../lib/work-meter.ts';
 import type { FactorSource, LookbackStatus } from './lookback-types.ts';
 import type { RunCells } from '../lib/run-cells.ts';
@@ -285,7 +286,9 @@ export type SlowToMain =
       /** The same library as `TraceLibrary.toBytes()` (a copy), so Extract can solve with the final one. */
       bytes: Uint8Array;
     }
-  | { type: 'error'; session: number; message: string };
+  | { type: 'error'; session: number; message: string }
+  /** Measurement only (`?debug&detlog`): determinism-log rows since the last flush (`lib/detlog.ts`). */
+  | { type: 'detlog'; session: number; rows: DetLogRow[] };
 
 /**
  * Main thread -> slow worker: the port to the fast worker, and one port to
@@ -297,6 +300,8 @@ export interface SlowConnect {
   visits?: MessagePort[];
   /** Measurement only (`?debug`): finer timers in `WorkStatus.detail` (`SlowRunner.setDebugTiming`). */
   debugTiming?: boolean;
+  /** Measurement only (`?debug&detlog`): keep the determinism log (`SlowRunner.setDetlog`). */
+  detlog?: boolean;
 }
 
 /**

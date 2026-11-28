@@ -109,6 +109,7 @@ workerScope.onmessage = (e) => {
   });
   const r = runner;
   if (data.debugTiming) r.setDebugTiming(true);
+  if (data.detlog) r.setDetlog(true);
   if (pace) r.setPace(pace.fps, pace.paused);
   if (cap !== null) r.setCap(cap);
   if (pool) r.setSettlePool(pool.session, pool.workers);

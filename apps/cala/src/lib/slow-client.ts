@@ -24,6 +24,8 @@ import type {
   VisitConnect,
 } from '../workers/slow-types.ts';
 import { errMsg } from './errors.ts';
+import { keepDetlog } from './detlog.ts';
+import { parsePageFlags } from './page-flags.ts';
 
 /** The main thread's handle on the slow worker and its visit workers. */
 export interface SlowClient {
@@ -115,7 +117,11 @@ export function createSlowClient(
   function start(): NonNullable<typeof live> {
     const worker = makeWorker();
     const channel = new MessageChannel();
-    worker.onmessage = (e: MessageEvent<SlowToMain>) => onMessage(e.data);
+    worker.onmessage = (e: MessageEvent<SlowToMain>) => {
+      // Measurement only: the determinism log stays on the page for the driver.
+      if (e.data.type === 'detlog') keepDetlog(e.data);
+      else onMessage(e.data);
+    };
     worker.onerror = (e) =>
       onMessage({ type: 'error', session: -1, message: e.message || 'The slow worker crashed.' });
     const helpers: SlowWorkerLike[] = [];
@@ -131,13 +137,16 @@ export function createSlowClient(
       ports.push(ch.port1);
     }
     // Measurement only: `?debug` turns the slow worker's finer timers on (`WorkStatus.detail`).
-    const debugTiming =
-      typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
+    const flags = typeof location !== 'undefined' ? parsePageFlags(location.search) : null;
+    const debugTiming = flags?.debug === true;
+    // `?debug&detlog`: the slow worker keeps the determinism log (`lib/detlog.ts`).
+    const detlog = flags?.detlog === true;
     const connect: SlowConnect = {
       type: 'connect',
       port: channel.port2,
       visits: ports,
       ...(debugTiming ? { debugTiming } : {}),
+      ...(detlog ? { detlog } : {}),
     };
     worker.postMessage(connect, [channel.port2, ...ports]);
     if (pace) worker.postMessage(pace);

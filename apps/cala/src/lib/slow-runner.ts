@@ -80,6 +80,7 @@ import type {
   VisitToOwner,
 } from '../workers/slow-types.ts';
 import { libraryViewTransferables, visitRateCounters } from '../workers/slow-types.ts';
+import { DetLog, fnvBytes } from './detlog.ts';
 import { errMsg } from './errors.ts';
 import { BgSettleDriver, type BgSettleHost, type BgSettle } from './bg-settle-driver.ts';
 import { FinalSettleDriver, type FinalSettleHost, type Settle } from './final-settle-driver.ts';
@@ -485,6 +486,12 @@ export class SlowRunner {
   private stillMoving: Float64Array | null = null;
   /** Measurement only (`?debug`, `setDebugTiming`): finer sums for the stage-0 attribution. */
   private dt: DetailTimer | null = null;
+  /** Measurement only (`?debug&detlog`, `setDetlog`): the determinism log. */
+  private det: DetLog | null = null;
+  /** Visit jobs handed out this run (the determinism log's take sequence). */
+  private takeSeq = 0;
+  /** Per visit worker: the take sequence of the job out (determinism log). */
+  private slotSeq: number[] = [];
   /** Per look-back worker: epoch ms the request out was sent (relay timing). */
   private lbSentAt: number[] = [];
   private readonly defer: (fn: () => void) => void;
@@ -656,6 +663,17 @@ export class SlowRunner {
     this.dt = on ? new DetailTimer(this.now) : null;
   }
 
+  /** Measurement only: keep the determinism log (`lib/detlog.ts`), sent with each status. Changes no decision. */
+  setDetlog(on: boolean): void {
+    this.det = on ? new DetLog() : null;
+  }
+
+  /** The determinism log's rows since the last flush, to the main thread (none: nothing sent). */
+  private flushDetlog(): void {
+    const rows = this.det?.take();
+    if (rows?.length) this.deps.toMain.postMessage({ type: 'detlog', session: this.session, rows });
+  }
+
   /** `fn` timed under `key` when debug timing is on (else just run). */
   private tm<T>(key: string, fn: () => T): T {
     return this.dt ? this.dt.time(key, fn) : fn();
@@ -820,7 +838,9 @@ export class SlowRunner {
     if (msg.type === 'reset' || msg.type === 'init') {
       if (msg.session < this.session) return;
       this.drop();
+      this.flushDetlog();
       this.session = msg.session;
+      this.takeSeq = 0;
       // (An init replaces a visit worker's state too.)
       if (msg.type === 'reset')
         for (const v of this.visits) v.postMessage({ type: 'reset', session: msg.session });
@@ -910,6 +930,14 @@ export class SlowRunner {
     try {
       if (msg.type === 'error') throw new Error(`visit worker ${i}: ${msg.message}`);
       this.busy[i] = false;
+      this.det?.row(
+        'apply',
+        this.observed,
+        this.slotSeq[i],
+        i,
+        fnvBytes(msg.bytes),
+        this.loop.work,
+      );
       const t0 = this.now();
       this.clock.span('visit', () => this.tm('visit.apply', () => this.loop!.applyJob(msg.bytes)));
       this.jobOwnerMs += this.now() - t0;
@@ -992,6 +1020,7 @@ export class SlowRunner {
     beginLive();
     try {
       if (loop && init) {
+        this.det?.row('batch', this.observed, msg.start, msg.count, msg.version, loop.work);
         if (msg.noise) {
           this.tm('live.setNoise', () => loop.setNoise(msg.noise!));
           for (const v of this.visits)
@@ -1109,6 +1138,10 @@ export class SlowRunner {
         const t0 = this.now();
         const bytes = this.tm('visit.take', () => loop.takeJob());
         if (!bytes) break;
+        if (this.det) {
+          this.slotSeq[i] = ++this.takeSeq;
+          this.det.row('take', this.observed, this.takeSeq, i, fnvBytes(bytes));
+        }
         this.busy[i] = true;
         this.jobSettle[i] = settling;
         handed++;
@@ -1182,6 +1215,7 @@ export class SlowRunner {
   ): void {
     const id = this.lbNextId++;
     const req: LookbackReq = { id, port, kind, items, ...(skip ? { skip } : {}) };
+    this.det?.row('req', this.observed, id, port, kind, items.length, fnvBytes(flat));
     // `flat` is a fresh array (from WASM or built here): transferred as is; `skip` is copied.
     this.clock.span(kind, () =>
       this.lbPorts[port]!.postMessage(
@@ -1299,6 +1333,15 @@ export class SlowRunner {
     this.lbReqs[port] = null;
     this.lbTimers[port]?.();
     this.lbTimers[port] = null;
+    this.det?.row(
+      'ans',
+      this.observed,
+      req.id,
+      port,
+      req.kind,
+      msg.type === 'frames' ? msg.version : -1,
+      msg.type === 'frames' ? fnvBytes(msg.traces) : 0,
+    );
     if (this.dt && msg.type === 'frames') {
       // Relay timing: request sent -> this handler (round trip), and answer posted -> here (queued).
       const at = this.epochNow();
@@ -1442,6 +1485,7 @@ export class SlowRunner {
   private end(): void {
     const loop = this.loop;
     if (!loop || this.final || this.ending || this.finalSettle.state || this.factorWait) return;
+    this.det?.row('end', this.observed);
     // A look-back Discover settles first (`settlePump`).
     if (this.lbOn && this.run === 1) {
       if (this.factorFile && this.lbError === undefined) {
@@ -1552,6 +1596,7 @@ export class SlowRunner {
     if (!loop || this.final) return;
     this.final = true;
     this.clock.span('publish', () => this.publish(loop.finalize()));
+    this.det?.row('final', this.observed);
     this.status(0, 0);
   }
 
@@ -1564,6 +1609,7 @@ export class SlowRunner {
         const tb = this.dt ? this.now() : 0;
         const bytes = lib.toBytes();
         this.dt?.add('publish.toBytes', this.now() - tb);
+        this.det?.row('pub', this.observed, version, fnvBytes(bytes));
         this.dt?.add('publish.libraries', 1);
         // The main thread keeps the newest library's bytes for Extract.
         const mainBytes = bytes.slice();
@@ -1664,6 +1710,7 @@ export class SlowRunner {
     this.clock.begin('publish');
     try {
       this.tm('status', () => this.statusInner(batchMs, maxStepMs));
+      this.flushDetlog();
     } finally {
       this.clock.end();
     }

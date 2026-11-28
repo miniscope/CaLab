@@ -143,6 +143,7 @@ describe('urlFlags', () => {
       'cbacklog=4',
       'fextract=0',
       'fwait',
+      'detlog',
       'gpucheck=5',
       'needfirst',
       'pacefps=30',
