@@ -1,7 +1,7 @@
 /**
  * The look-back worker's frame server and the newest library it was sent.
  * A recording's settle with `?factors=file` switches worker 0 from the file
- * to the factors (slice 3); the new server gets the newest library at once,
+ * to the factors; the replacement server gets the newest library at once,
  * so it never solves without one, whatever order the switch and a library
  * message come in.
  */

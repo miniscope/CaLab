@@ -1,9 +1,10 @@
 /**
- * The run's three main steps (Discover, Final settle, Extract): the stepper above the tabs and
+ * The run's three main steps (Discover, Final settle, Extract): the run rail's stage track and
  * the step panels in the Run tab share one view (`lib/step-view.ts`), so they always agree.
  */
+import { Icon } from '@calab/ui';
 import { visitHoldText } from '../lib/visit-rate.ts';
-import { createEffect, createSignal, For, on, Show, type JSX } from 'solid-js';
+import { createEffect, createSignal, on, Show, type JSX } from 'solid-js';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { Pass2Store } from '../lib/pass2-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
@@ -71,51 +72,6 @@ export function createSteps(src: () => StepSources): () => StepView[] {
   };
 }
 
-const pct = (v: StepView): string =>
-  v.state === 'off' ? 'off' : v.fraction !== null ? `${Math.floor(100 * v.fraction)} %` : '';
-
-/** The stepper: three boxes with arrows, each filling with its own progress. Fixed size. */
-export function StepStepper(props: { steps: StepView[] }): JSX.Element {
-  return (
-    <ol class="cala-steps" data-testid="run-steps" aria-label="Steps">
-      <For each={props.steps}>
-        {(v, i) => (
-          <>
-            <Show when={i() > 0}>
-              <li class="cala-steps__arrow" aria-hidden="true">
-                →
-              </li>
-            </Show>
-            <li
-              class={`cala-steps__box cala-steps__box--${v.state}`}
-              data-testid={`run-step-${v.key}`}
-              data-state={v.state}
-              title={`${v.label}: ${STATE_WORD[v.state]}${v.note ? ` (${v.note})` : ''}`}
-            >
-              <span
-                class="cala-steps__fill"
-                style={{
-                  width: `${100 * (v.state === 'off' ? 0 : (v.fraction ?? (v.state === 'running' ? 1 : 0)))}%`,
-                }}
-              />
-              <span class="cala-steps__text">
-                <span class="cala-steps__name">
-                  {v.state === 'done' ? '✓ ' : ''}
-                  {v.label}
-                </span>
-                <span class="cala-steps__num cala-num">
-                  {pct(v)}
-                  {v.fps !== null ? ` · ${Math.round(v.fps)} fps` : ''}
-                </span>
-              </span>
-            </li>
-          </>
-        )}
-      </For>
-    </ol>
-  );
-}
-
 /** A frames/s trace over a step's progress (x 0..1), on the fixed 10 to 500 fps log scale. */
 function RateChart(props: { samples: { x: number; fps: number }[]; testid: string }): JSX.Element {
   const W = 300;
@@ -152,13 +108,18 @@ export function StepPanel(props: { step: StepView; children?: JSX.Element }): JS
   const measured = () => v().fraction != null && (v().state === 'running' || v().state === 'done');
   return (
     <section
-      class={`cala-step cala-step--${v().state}`}
+      class={`cala-step cala-step--${v().state} cala-stage--${v().key}`}
       data-testid={`step-panel-${v().key}`}
       aria-label={v().label}
     >
       <div class="cala-step__head">
         <strong class="cala-step__name">{v().label}</strong>
-        <span class="cala-step__state">{STATE_WORD[v().state]}</span>
+        <span class="cala-step__state">
+          <Show when={v().state === 'done'}>
+            <Icon name="check" size={12} />{' '}
+          </Show>
+          {STATE_WORD[v().state]}
+        </span>
         <span class="cala-step__nums cala-num">{stepNumbers(v(), formatDuration)}</span>
       </div>
       <div

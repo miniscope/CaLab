@@ -125,6 +125,23 @@ describe('Meter', () => {
     expect(band.style.width).toBe('50%');
   });
 
+  it('draws secondary marks on the declared range, clamped, beside the target tick', () => {
+    const host = mount(() => (
+      <Meter
+        value={50}
+        min={10}
+        max={1000}
+        scale="log"
+        target={100}
+        marks={[10, 1e6, NaN]}
+        label="Speed"
+      />
+    ));
+    const marks = Array.from(host.querySelectorAll<HTMLElement>('.meter__mark'));
+    expect(marks.map((m) => m.style.left)).toEqual(['0%', '100%']);
+    expect(q(host, '.meter__tick').style.left).toBe('50%');
+  });
+
   it('colours the fill by tone through a token', () => {
     const host = mount(() => <Meter value={1} min={0} max={2} label="x" tone="settle" />);
     expect(q(host, '.meter').style.getPropertyValue('--meter-color')).toBe('var(--stage-settle)');
@@ -300,6 +317,29 @@ describe('StageTrack', () => {
     expect(d.querySelector('.icon--check')).not.toBeNull();
     expect(d.getAttribute('aria-label')).toBe('Discover: done');
     expect(s.querySelector('.icon--cross')).not.toBeNull();
+  });
+
+  it('is no progress bar when off or without a known end', () => {
+    const host = mount(() => (
+      <StageTrack stages={stages({ discover: { fraction: null, label: 'Discover · live' } })} />
+    ));
+    const [d, , e] = Array.from(host.querySelectorAll<HTMLElement>('.stage-track__seg'));
+    expect(host.querySelectorAll('[role="progressbar"]')).toHaveLength(1);
+    expect(d.getAttribute('role')).toBe('img');
+    expect(d.hasAttribute('aria-valuenow')).toBe(false);
+    expect(d.getAttribute('aria-label')).toBe('Discover · live: running');
+    expect(e.getAttribute('role')).toBe('img');
+  });
+
+  it('draws a hatched lead-in of the given share, clamped to half the segment', () => {
+    const host = mount(() => (
+      <StageTrack stages={stages({ discover: { leadIn: 0.1 }, settle: { leadIn: 3 } })} />
+    ));
+    const leads = Array.from(host.querySelectorAll<HTMLElement>('.stage-track__lead'));
+    expect(leads.map((l) => l.style.width)).toEqual(['10%', '50%']);
+    expect(host.querySelectorAll('.stage-track__seg')[2].querySelector('.stage-track__lead')).toBe(
+      null,
+    );
   });
 
   it('clamps the running fraction to [0, 1]', () => {

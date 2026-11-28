@@ -1,5 +1,5 @@
 /**
- * The Speed control's pure parts (beta speed control, PR D): the fixed
+ * The Speed control's pure parts: the fixed
  * logarithmic track, snapping, the settings that persist, and the status
  * sentence. No DOM and no store: `components/SpeedControl.tsx` draws them.
  */
@@ -84,6 +84,7 @@ export function nudgeFps(
 /** What a value of the range input means as a speed (snapped), and back. */
 export const stepToFps = (step: number, marks?: readonly number[]): number =>
   snapFps(posToFps(step / TRACK_STEPS), marks);
+/** A speed's step on the range input behind the track. */
 export const fpsToStep = (fps: number): number => Math.round(fpsToPos(fps) * TRACK_STEPS);
 
 // ---- cap ----
@@ -91,6 +92,7 @@ export const fpsToStep = (fps: number): number => Math.round(fpsToPos(fps) * TRA
 /** The cap choices, re-read frames per live frame (0 = Off). */
 export const CAP_CHOICES = [2, 1, 0.5, 0] as const;
 
+/** The label of a cap choice; `live` words it for the live readout. */
 export function capLabel(cap: number, live = false): string {
   if (cap === 0) return 'Off';
   if (live && cap === 2) return 'all spare, up to 2 per live frame';
@@ -101,9 +103,12 @@ export function capLabel(cap: number, live = false): string {
 
 /** The budget choices: extra time over a Max run, as a share (0.5 is +50 %). */
 export const AUTO_BUDGETS = [0.5, 1, 2] as const;
+/** One of `AUTO_BUDGETS`. */
 export type AutoBudget = (typeof AUTO_BUDGETS)[number];
+/** The budget Auto starts with. */
 export const AUTO_DEFAULT_BUDGET: AutoBudget = 1;
 
+/** Whether `x` is one of `AUTO_BUDGETS`. */
 export function isAutoBudget(x: unknown): x is AutoBudget {
   return (AUTO_BUDGETS as readonly unknown[]).includes(x);
 }
@@ -113,12 +118,15 @@ export const budgetLabel = (share: number): string => `+${Math.round(share * 100
 
 // ---- settings that persist ----
 
+/** The Speed control's modes. */
 export type SpeedMode = 'max' | 'fixed' | 'curve' | 'auto';
 
 /** The curve presets of the Curve mode (`speed-schedule.ts` has their points). */
 export const CURVE_PRESET_IDS = ['find-fast', 'step-down'] as const;
+/** One of `CURVE_PRESET_IDS`. */
 export type CurvePresetId = (typeof CURVE_PRESET_IDS)[number];
 
+/** The Speed control's persisted settings. */
 export interface SpeedSettings {
   mode: SpeedMode;
   /** The last Fixed target, fps (kept while in Max). */
@@ -131,6 +139,7 @@ export interface SpeedSettings {
   autoBudget: number;
 }
 
+/** The settings when nothing is stored. */
 export const SPEED_DEFAULTS: SpeedSettings = {
   mode: 'max',
   fixedFps: 30,
@@ -139,6 +148,7 @@ export const SPEED_DEFAULTS: SpeedSettings = {
   autoBudget: AUTO_DEFAULT_BUDGET,
 };
 
+/** The localStorage key of the persisted settings. */
 export const SPEED_STORAGE_KEY = 'cala.speed.v1';
 
 /** Settings from stored text; anything missing or invalid falls back to the default, field by field. */
@@ -168,6 +178,7 @@ export function parseSpeedSettings(raw: string | null | undefined): SpeedSetting
   return out;
 }
 
+/** The stored settings, field by field defaulted. */
 export function loadSpeedSettings(storage?: Pick<Storage, 'getItem'>): SpeedSettings {
   try {
     return parseSpeedSettings((storage ?? localStorage).getItem(SPEED_STORAGE_KEY));
@@ -176,6 +187,7 @@ export function loadSpeedSettings(storage?: Pick<Storage, 'getItem'>): SpeedSett
   }
 }
 
+/** Store the settings; silent when storage refuses. */
 export function saveSpeedSettings(s: SpeedSettings, storage?: Pick<Storage, 'setItem'>): void {
   try {
     (storage ?? localStorage).setItem(SPEED_STORAGE_KEY, JSON.stringify(s));
@@ -186,6 +198,7 @@ export function saveSpeedSettings(s: SpeedSettings, storage?: Pick<Storage, 'set
 
 // ---- the sentence under the headline ----
 
+/** What `speedStatusText` reads. */
 export interface SpeedStatusInput {
   running: boolean;
   /** Target, fps (0: Max). */
@@ -201,7 +214,7 @@ export interface SpeedStatusInput {
 
 const TOL = 0.97;
 
-/** The status line once Discover has read its last frame: the setting now only applies to the next run. */
+/** The status line once Discover has read its last frame: the setting applies only to the next run. */
 export const DONE_TEXT = 'Discover has read every frame; a change here applies to the next run.';
 
 /**

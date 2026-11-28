@@ -4,15 +4,17 @@
 > To add an app, follow [NEW_APP.md](NEW_APP.md).
 
 CaLab is a monorepo of calcium imaging analysis tools: SolidJS + TypeScript web apps
-built with Vite, a Rust solver compiled to WebAssembly for the browser and to a
-native extension for the `calab` Python package, and a Supabase backend for
-community sharing and usage analytics.
+built with Vite; a Rust deconvolution solver (`crates/solver`) compiled to WebAssembly
+for the browser and to a native extension for the `calab` Python package; a Rust
+streaming cell-finding engine (`crates/cala`) compiled to WebAssembly for the Cala app;
+and a Supabase backend for community sharing and usage analytics. The apps are served
+from <https://calab.miniscope.org> (see [Hosting](#hosting)).
 
 ## Monorepo Structure
 
 npm workspaces cover `apps/*` and `packages/*` (root `package.json`). There are
-eight packages and five app directories: four apps (`catune`, `cadecon`, `cabana`,
-`admin`) and `apps/_template`, the starting point for a new app. The build
+nine packages and six app directories: five apps (`catune`, `cadecon`, `cala`,
+`cabana`, `admin`) and `apps/_template`, the starting point for a new app. The build
 scripts skip `_template`. The tree shows the shape of each area rather than every
 file.
 
@@ -40,13 +42,14 @@ file.
 │   │                              # cadecon-pool, bridge-effects; workers/
 │   │                              # has cadecon-worker.ts + cadecon-types.ts
 │   ├── cabana/                    # CaBaNA: coming-soon placeholder (no solver)
-│   ├── cala/                      # Cala: streaming Miniscope pipeline (hidden, WIP);
-│   │                              # lib/frame-source.ts + workers/frame-worker.ts
-│   ├── admin/                     # Admin: analytics + moderation (hidden app)
+│   ├── cala/                      # Cala: streaming raw 1-photon video to footprints and
+│   │                              # traces (WASM + WebGPU); own CLAUDE.md and docs/
+│   ├── admin/                     # Admin: community submissions + analytics (hidden app)
 │   └── _template/                 # Minimal app scaffold (placeholder calab.id)
 ├── packages/
 │   ├── core/                      # @calab/core      types, pure math; ./wasm entry
 │   ├── compute/                   # @calab/compute   worker pool, kernel math, sims
+│   ├── compute-gpu/               # @calab/compute-gpu  WebGPU batched FISTA (CaTune)
 │   ├── io/                        # @calab/io        parsers, import store, bridge
 │   ├── community/                 # @calab/community Supabase, auth, analytics
 │   ├── community-ui/              # @calab/community-ui  community/auth widgets
@@ -57,10 +60,18 @@ file.
 │   ├── src/                       # lib.rs, validate.rs, fista.rs, indeca.rs, ...
 │   ├── tests/                     # solver_degenerate.rs, solver_proptest.rs
 │   └── pkg/                       # wasm-pack output (build-only, gitignored)
-├── crates/cala/                   # Rust core of Cala (wasm-bindgen; PyO3 stub)
-│   └── src/                       # avi.rs: plain-RIFF AVI header + frame offsets
-├── python/                        # `calab` package (maturin), tests, docs
-│   └── src/calab/_bridge/         # registry, manifest, handshake, HTTP server
+├── crates/cala/                   # Rust engine of Cala (wasm-bindgen; PyO3 stub)
+│   ├── src/                       # avi, preprocess, motion, discover (slow loop),
+│   │                              # trace (fast loop), compress, qc, ...
+│   ├── examples/                  # eval binaries (qc_eval, discover_eval, ...)
+│   └── pkg/                       # wasm-pack output (build-only, gitignored)
+├── python/                        # `calab` package (maturin), tests, docs: a bridge
+│   │                              # between Python and the browser apps, not an
+│   │                              # algorithm home
+│   └── src/calab/                 # _bridge/ (registry, manifest, handshake, HTTP
+│                                  # server), _loaders/, _calaraw.py, _compute.py, ...
+├── tools/cala-eval/               # Paired multi-seed evaluation of cala (Python and
+│                                  # shell drivers); results/ holds dated notes
 ├── supabase/                      # migrations/, functions/geo-session/,
 │                                  # tests/rls/, seed/
 ├── e2e/                           # Playwright smoke specs + build/serve helpers
@@ -75,7 +86,8 @@ file.
 │   ├── ensure-wasm.mjs            # Build crates/*/pkg (solver, cala) if missing/stale
 │   ├── typecheck.mjs              # tsc over every app and package
 │   └── test-rls.sh                # Supabase RLS policy matrix
-├── docs/                          # ARCHITECTURE, CHANGELOG, CONTRIBUTING, NEW_APP
+├── docs/                          # ARCHITECTURE, CHANGELOG, CONTRIBUTING, NEW_APP,
+│                                  # analytics
 ├── .github/workflows/             # ci.yml, deploy.yml, publish-python.yml
 ├── tsconfig.base.json             # Shared compiler options
 ├── tsconfig.app.json              # Shared app tsconfig (adds __APP_ID__ type)
@@ -104,6 +116,9 @@ graph TD
   community["@calab/community"]
   cui["@calab/community-ui"]
   compute --> core
+  gpu["@calab/compute-gpu"]
+  gpu --> compute
+  gpu --> core
   io --> core
   io --> compute
   ui --> core
@@ -113,29 +128,34 @@ graph TD
   cui --> community
   cui --> compute
   cui --> core
+  cui --> tutorials
   cui --> ui
   catune -.-> cui
   cadecon -.-> cui
+  catune -.-> gpu
+  cala -.-> cui
   cabana -.-> cui
   admin -.-> cui
   template["_template"] -.-> ui
 ```
 
-| Package / app         | `@calab/*` dependencies                                     | Notable external deps                      |
-| --------------------- | ----------------------------------------------------------- | ------------------------------------------ |
-| `@calab/core`         | none                                                        | none                                       |
-| `@calab/compute`      | core                                                        | none                                       |
-| `@calab/io`           | core, compute                                               | `fflate`, `solid-js`                       |
-| `@calab/tutorials`    | none                                                        | `driver.js`, `solid-js`                    |
-| `@calab/community`    | none                                                        | `@supabase/supabase-js`, `solid-js` (peer) |
-| `@calab/ui`           | core, compute, io (only from `@calab/ui/import`), tutorials | `solid-js`, `uplot`, `@dschz/solid-uplot`  |
-| `@calab/community-ui` | community, compute, core, ui                                | `solid-js`, `uplot`                        |
-| `@calab/vite-config`  | none (uses the root `vite`/`vitest`/plugin devDependencies) | none                                       |
-| `apps/catune`         | all seven runtime packages                                  | `uplot`, `@dschz/solid-uplot`, `valibot`   |
-| `apps/cadecon`        | all seven runtime packages                                  | `uplot`, `@dschz/solid-uplot`              |
-| `apps/cabana`         | all seven runtime packages                                  | none                                       |
-| `apps/admin`          | community, community-ui, ui                                 | none                                       |
-| `apps/_template`      | core, io, tutorials, ui                                     | none                                       |
+| Package / app         | `@calab/*` dependencies                                                | Notable external deps                      |
+| --------------------- | ---------------------------------------------------------------------- | ------------------------------------------ |
+| `@calab/core`         | none                                                                   | none                                       |
+| `@calab/compute`      | core                                                                   | none                                       |
+| `@calab/io`           | core, compute                                                          | `fflate`, `solid-js`                       |
+| `@calab/tutorials`    | none                                                                   | `driver.js`, `solid-js`                    |
+| `@calab/community`    | none                                                                   | `@supabase/supabase-js`, `solid-js` (peer) |
+| `@calab/ui`           | core, compute, io (only from `@calab/ui/import`), tutorials            | `solid-js`, `uplot`, `@dschz/solid-uplot`  |
+| `@calab/compute-gpu`  | compute, core                                                          | none (`@webgpu/types` dev)                 |
+| `@calab/community-ui` | community, compute, core, tutorials, ui                                | `solid-js`, `uplot`                        |
+| `@calab/vite-config`  | none (uses the root `vite`/`vitest`/plugin devDependencies)            | none                                       |
+| `apps/catune`         | community, community-ui, compute, compute-gpu, core, io, tutorials, ui | `uplot`, `@dschz/solid-uplot`, `valibot`   |
+| `apps/cadecon`        | community, community-ui, compute, core, io, tutorials, ui              | `uplot`, `@dschz/solid-uplot`              |
+| `apps/cala`           | community, community-ui, compute, io, tutorials, ui                    | `uplot`, `@dschz/solid-uplot`              |
+| `apps/cabana`         | community, community-ui, compute, core, io, tutorials, ui              | none                                       |
+| `apps/admin`          | community, community-ui, io, ui                                        | none                                       |
+| `apps/_template`      | community, community-ui, compute, core, io, tutorials, ui              | none                                       |
 
 ### Boundary rules
 
@@ -169,6 +189,11 @@ the dataset-overview metrics (`buildDatasetOverview`), the solver metrics and `c
 `get_simulation_presets`, `solver_version` and `getSolverVersion()` (inits WASM,
 returns the version, or `undefined` if WASM fails to load). Keeping the solver out
 of the barrel is what lets CaBaNA ship without the `.wasm` asset.
+
+**`@calab/compute-gpu`**. A WebGPU batched FISTA solver (`createGpuFista`,
+`requestGpuDevice`, `computeBandedParams`, the memory estimators, and the re-exported
+`GpuOutOfMemoryError` / `GpuDeviceLostError`) with CPU reference implementations
+for parity tests. CaTune selects it through `lib/solver-backend.ts`.
 
 **`@calab/compute`**. `createWorkerPool` (see [Solver Pipeline](#solver-pipeline))
 and its sizing helpers (`resolveWorkerCount`, `getWorkersOverride` for the
@@ -227,7 +252,8 @@ chart re-exports. `@calab/ui/chart`: uPlot plugins and helpers (`wheelZoomPlugin
 [CSS Conventions](#css-conventions)).
 
 **`@calab/vite-config`**. `defineCalabApp(appDir, { wasm?, vite? })` returns an
-app's whole Vite + Vitest config: GitHub Pages `base` (`appBase`), `envDir`, the
+app's whole Vite + Vitest config: the asset `base` (`appBase`: `./` for the
+calab.miniscope.org build, `/<repo>/<displayName>/` for the GitHub Pages build), `envDir`, the
 Solid plugin, `vite-plugin-wasm` on the main and worker builds when `wasm: true`
 (never under Vitest), the jsdom test environment, and the `__APP_ID__` define.
 `readAppIdentity` validates `calab.id` against `APP_ID_PATTERN`. `client.d.ts`
@@ -436,7 +462,7 @@ and that `apps.json` matches the cards. See [e2e/README.md](../e2e/README.md).
 - `python`: maturin develop, ruff, mypy, pytest on Python 3.11, 3.12 and 3.13.
 - `supabase`: migrations + RLS matrix, then the Deno edge-function tests.
 
-**Deploy (`deploy.yml`, `v*` tags or manual).** `deploy` needs `check` (format,
+**Deploy (`deploy.yml`, `v*` tags or manual; see [Hosting](#hosting)).** `deploy` needs `check` (format,
 lint, typecheck, app-test check, tests), `rust`, `python`, `supabase` and `e2e`,
 mirrors of the CI jobs. It then runs `npm run build:pages` (build, `combine-dist`,
 `check-apps-manifest`) and uploads `dist/<repository name>` to GitHub Pages.
@@ -446,6 +472,34 @@ mirrors of the CI jobs. It then runs `npm run build:pages` (build, `combine-dist
 
 **Python release (`publish-python.yml`, `py/v*` tags).** `test` and `rust` gate
 wheel and sdist builds; wheels are smoke-tested before `publish` to PyPI.
+
+## Hosting
+
+A `v*` tag publishes the release to two hosts (details: CONTRIBUTING.md, "Releases and
+hosting").
+
+- **calab.miniscope.org**, the lab's server (job `deploy-vps`). `npm run build:site`
+  builds with the relative Vite base `./`, so one build works at any path. Each app
+  lives under its `calab.displayName`: `CaTune`, `CaDecon`, `Cala`, `CaBaNA`, `Admin`.
+  Caddy serves `/srv/calab/releases/` read-only:
+
+  | URL                                            | Served from                                 |
+  | ---------------------------------------------- | ------------------------------------------- |
+  | `/`, `/apps.json`                              | `latest/` (landing page, manifest)          |
+  | `/<App>/` (e.g. `/CaTune/`)                    | `latest/<App>/`, the newest release         |
+  | `/<App>/v<version>/` (e.g. `/CaTune/v2.23.1/`) | `v<version>/<App>/`, that release, for good |
+
+  The job rsyncs the combined site (`dist/<repo>/`) to `v<version>/` and then to
+  `latest/`, never deleting, so every release stays reachable at its versioned URL.
+  Only per-app URLs are versioned; the landing page and `apps.json` are always the
+  newest.
+
+- **GitHub Pages** (job `deploy`). `npm run build:pages` builds with the absolute base
+  `/<repo>/<displayName>/` and uploads `dist/<repo>/`; it only ever has the newest
+  release.
+
+The Python bridge reads `apps.json` from calab.miniscope.org by default
+(`python/src/calab/_bridge/_manifest.py`).
 
 ## CSS Conventions
 

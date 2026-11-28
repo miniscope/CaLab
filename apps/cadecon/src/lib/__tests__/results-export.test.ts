@@ -406,8 +406,7 @@ describe('buildCaDeconResultsPayload: nothing fitted', () => {
    * iteration-0 snapshot as the latest one. It holds the seed kernel, which was
    * never fitted, so its residual is null and must stay null through the export.
    *
-   * `residual: 0` was the old placeholder, and it is the worst possible value
-   * to invent — `field_descriptions` in this same file tells the reader that
+   * A residual of 0 is the worst possible value to invent — `field_descriptions` in this same file tells the reader that
    * lower is a better fit, so a run that fitted nothing claimed the best score
    * available.
    */

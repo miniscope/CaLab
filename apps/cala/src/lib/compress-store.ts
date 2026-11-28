@@ -30,7 +30,7 @@ export interface BackfillSink {
   ): void;
 }
 
-/** A live run's factors (`?factors`; spec decision 4). */
+/** A live run's factors (`?factors`). */
 export type FactorState = 'none' | 'compressing' | 'ready' | 'unusable';
 
 /** What Extract and the settle read: the run folder and its windows. */

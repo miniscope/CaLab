@@ -21,6 +21,7 @@ export type CompressToReview =
   /** Pipeline stopped or restarted: drop everything. */
   | { type: 'reset'; session: number };
 
+/** The review worker's status. */
 export interface ReviewStatus {
   /** Reviews finished, and reviews that were due while one was running. */
   reviews: number;

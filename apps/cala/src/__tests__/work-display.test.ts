@@ -21,6 +21,7 @@ import {
   settlednessFromHints,
   stackBands,
   stoppedLookbackRows,
+  BG_SETTLE_GROUND,
   BG_SETTLE_HATCH,
   KIND_COLOR,
   stripLayout,
@@ -315,6 +316,8 @@ describe('accessible names and stopped rows', () => {
   it('Background settle differs from Final settle by more than lightness', () => {
     expect(BG_SETTLE_HATCH).toContain('repeating-linear-gradient');
     expect(BG_SETTLE_HATCH).toContain(KIND_COLOR.finalSettle);
+    expect(BG_SETTLE_HATCH).toContain(BG_SETTLE_GROUND);
+    expect(BG_SETTLE_GROUND).not.toBe(KIND_COLOR.finalSettle);
   });
 });
 

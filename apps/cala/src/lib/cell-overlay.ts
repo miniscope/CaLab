@@ -189,10 +189,21 @@ export function renderOverlay(g: CellGeometry, style: OverlayStyle, out?: Uint8C
     if (f > 0) for (const p of shape.inside) put(p, c, f);
     for (const p of shape.contour) put(p, c, 0.95);
   }
-  // The selected cell on top.
+  // The selected cell on top: a 2 px white outline (its contour plus the ring just outside it),
+  // so the selection reads over any QC colour.
   if (sel) {
     for (const p of sel.inside) put(p, SELECTED, 0.3);
-    for (const p of sel.contour) put(p, SELECTED, 1);
+    const inside = new Set(sel.inside);
+    const { width, height } = g;
+    for (const p of sel.contour) {
+      put(p, SELECTED, 1);
+      const x = p % width;
+      const y = (p - x) / width;
+      if (x > 0 && !inside.has(p - 1)) put(p - 1, SELECTED, 1);
+      if (x < width - 1 && !inside.has(p + 1)) put(p + 1, SELECTED, 1);
+      if (y > 0 && !inside.has(p - width)) put(p - width, SELECTED, 1);
+      if (y < height - 1 && !inside.has(p + width)) put(p + width, SELECTED, 1);
+    }
   }
   return rgba;
 }

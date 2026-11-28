@@ -35,7 +35,7 @@ export interface CompressInit {
   pool?: { discover: number; after: number; extract?: number };
   /** The cap on window files waiting for compression, bytes (absent: from the storage estimate; `?debug&cbacklog`). */
   backlogCap?: number;
-  /** Extract on factors on rebuilt frames with one engine, as before slice 6 (`?debug&fextract=0`). */
+  /** Extract on rebuilt frames with one engine instead of on the factors (`?debug&fextract=0`). */
   frameExtract?: boolean;
   /**
    * Compress on the GPU (a recording's default): windows of the GPU
@@ -136,6 +136,7 @@ export interface CompressedWindow {
   frames: number;
 }
 
+/** The compress worker's status: progress, rates, sizes and the compressed windows. */
 export interface CompressStatus {
   /** Windows compressed so far, and the frames they hold. */
   windows: number;

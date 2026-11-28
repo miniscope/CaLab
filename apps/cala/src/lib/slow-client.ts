@@ -25,6 +25,7 @@ import type {
 } from '../workers/slow-types.ts';
 import { errMsg } from './errors.ts';
 
+/** The main thread's handle on the slow worker and its visit workers. */
 export interface SlowClient {
   /** Visit workers running the slow loop's tile visits. */
   readonly visitWorkers: number;
@@ -58,6 +59,7 @@ export interface SlowClient {
   dispose(): void;
 }
 
+/** The part of a `Worker` the client uses (tests pass fakes). */
 export type SlowWorkerLike = Pick<Worker, 'postMessage' | 'terminate' | 'onmessage' | 'onerror'>;
 
 /** Threads the app keeps busy besides the visit workers: the main thread, the three pipeline stage workers and the slow worker. */
@@ -65,18 +67,17 @@ export const RESERVED_THREADS = 5;
 /**
  * Forward buffers (batches in flight to the slow worker) with visit workers.
  * The slow worker then only observes and keeps up on average; two buffers
- * still dropped a third of the batches on real data, because a buffer comes
- * back only once the trace worker reads the ack between its own batches and
- * library rebuilds stall the slow worker for a batch or two. Four drop about
- * a tenth. Each is `batchSize` frames on each side (8 x 1.4 MB at 600 x 600).
+ * drop many batches on real data, because a buffer comes back only once the
+ * trace worker reads the ack between its own batches and library rebuilds
+ * stall the slow worker for a batch or two. Four drop far fewer. Each is
+ * `batchSize` frames on each side (8 x 1.4 MB at 600 x 600).
  */
 export const PARALLEL_FORWARD_BUFFERS = 4;
 /**
  * Visit workers at most (each holds a copy of one tile's reservoir while it
  * works). Past four the slow worker itself (observing every frame, handing
- * out and applying visits) is the bottleneck: on the GT sims (timed harness,
- * 250 fps) six workers sat 53-55 % busy against 66-67 % for four, and
- * recall at 8 min was no better (0.734-0.746 vs 0.754-0.760).
+ * out and applying visits) is the bottleneck: more workers sit less busy and
+ * recall does not improve.
  */
 export const MAX_VISIT_WORKERS = 4;
 
@@ -90,6 +91,7 @@ export function visitWorkerCount(cores: number | undefined): number {
   return Math.max(0, Math.min(MAX_VISIT_WORKERS, Number.isFinite(n) ? n : 0));
 }
 
+/** Create the slow-worker client. */
 export function createSlowClient(
   frames: Pick<FrameClient, 'connectSlow'>,
   onMessage: (msg: SlowToMain) => void,

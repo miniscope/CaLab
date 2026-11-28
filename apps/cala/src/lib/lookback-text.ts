@@ -80,21 +80,3 @@ export function lookbackText(lb: LookbackStatus, final: boolean): string {
   }
   return `Look-back: ${read} · ${lb.inNeed} cells still need data${csettleText(lb.csettle, true)}${err}`;
 }
-
-/** The stage after Discover ended, for the status chip: Final settle, Extract, Done ("Discover done" before Extract). */
-export function stageLabel(s: {
-  discover: string;
-  settling: boolean;
-  extract: string;
-  /** A live stream: nothing follows Discover, so its end is Done. */
-  live?: boolean;
-  /** A `?factors` stream: Extract follows its Discover as a recording's does. */
-  factorRun?: boolean;
-}): string {
-  if (s.discover !== 'done') return 'Discover';
-  if (s.settling) return 'Final settle';
-  if (s.live && !s.factorRun) return 'Done';
-  if (s.extract === 'running') return 'Extract';
-  if (s.extract === 'done') return 'Done';
-  return 'Discover done';
-}

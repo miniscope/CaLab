@@ -9,13 +9,12 @@
  * both with the wasm `AviHeader`; `readFrame` / `readFrames` later slice just
  * the frames asked for out of the owning `File`.
  *
- * Intended reuse: this module imports nothing from the UI, only the wasm
- * adapter and pure helpers, so it is meant to move into a package and be
- * driven by the streaming-processing worker, which reads sequentially at high
- * throughput with `readFrames(start, count, out)` into buffers it owns
+ * This module imports nothing from the UI, only the wasm adapter and pure
+ * helpers, so a worker can drive it: the frame worker reads sequentially at
+ * high throughput with `readFrames(start, count, out)` into buffers it owns
  * (reusing them between calls, or transferring them on). It lives in the app
- * for now because only cala uses it and it depends on the cala WASM module,
- * which `@calab/core` must not import.
+ * because it depends on the cala WASM module, which `@calab/core` must not
+ * import.
  */
 import { AviHeader, aviIdx1PayloadLen, aviIsAvixContinuation } from './cala-wasm.ts';
 import type { DeviceIdentity } from './flat-field.ts';
@@ -302,7 +301,7 @@ async function openAvi(file: File): Promise<AviHeader> {
   }
   const [riffEnd, moviEnd] = layout;
 
-  // OpenDML files continue in further RIFF chunks; not supported (yet).
+  // OpenDML files continue in further RIFF chunks; not supported.
   if (file.size >= riffEnd + 12) {
     const next = await readBytes(file, riffEnd, riffEnd + 12);
     if (aviIsAvixContinuation(next)) {
@@ -360,7 +359,7 @@ async function openRecording(
   const { group, metaData, timeStamps, ignored } = groupFiles(withNames(entries));
   const warnings: string[] = [...group.numberingWarnings];
 
-  // Header reads are throttled: ~7.8k files for a three-day recording, and
+  // Header reads are throttled: a multi-day recording has thousands of files, and
   // each is a few small reads that a network drive answers slowly.
   let opening = 0;
   const all = await mapLimit(group.avis, OPEN_CONCURRENCY, async ({ file }) => {

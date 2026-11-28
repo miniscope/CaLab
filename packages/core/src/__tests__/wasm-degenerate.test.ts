@@ -171,7 +171,7 @@ describe.skipIf(!pkgPresent)('WASM exports reject degenerate input without trapp
     it('spectrum frequency axis always matches the power spectrum length', () => {
       const s = new Solver();
       try {
-        // No trace loaded: both empty (the axis used to be [NaN]).
+        // No trace loaded: both empty.
         expect(s.get_spectrum_frequencies().length).toBe(0);
         expect(s.get_power_spectrum().length).toBe(0);
         for (const n of [1, 2, 7, 8, 9, 64]) {

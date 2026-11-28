@@ -26,8 +26,8 @@
  * archives.
  *
  * Format of `calaExport.npz` (N cells, T frames, H x W field of view). Keys,
- * dtypes and shapes are unchanged from format version 1; only the memory order
- * of `traces` differs (Fortran, see above):
+ * dtypes and shapes are the same in every format version; `traces` is stored in
+ * Fortran memory order (see above):
  *
  *   traces              float32 [N, T]   Extract's traces, one row per cell (preprocessed grey levels);
  *                                        stored Fortran-order (column per frame)
@@ -64,15 +64,15 @@
  *
  * Run stages (format version 3): `meta_json.stages` lists the runs of the
  * stages (docs/stages.md) since Discover started, in order: `stage`
- * (discover, extract; `refine` in an export from before Refine was removed),
+ * (discover, extract; older exports may also carry `refine`),
  * `index` (1-based per stage), `started_at`,
  * `ended_at` (ISO), `outcome`, `frames`, `cells`, `library_version`, and
  * Discover's counts (refines, refines_per_min, adds, merges, deletes, splits).
- * Exports from before Refine was removed may also carry Refine's footprint-change
+ * Older exports may also carry Refine's footprint-change
  * fields (footprints_refined, median_footprint_change, change_p90, refined_share,
  * series); readers ignore them.
- * Version 3 also renamed `pass2_seconds` to `extract_seconds` and the flat
- * field's `pass2` / `pass1_maps` to `extract` / `discover_maps`.
+ * The stage's duration is `extract_seconds`; the flat field's entries are
+ * `extract` / `discover_maps`.
  *
  * Field-of-view images (format version 5; optional to readers, absent when the
  * run kept none). Both are projections over Extract's frames (every frame of
@@ -148,8 +148,7 @@
  * non-ZIP64. Above that it is written streaming, Fortran-order, ZIP64 when
  * needed. CaDecon's own importer (fflate, 1 GiB decompressed cap, no ZIP64)
  * cannot open a file that large: use the cala `.npz` with `np.load` for very
- * long recordings, or export fewer cells (QC-passing only). A chunked CaDecon
- * importer is not built.
+ * long recordings, or export fewer cells (QC-passing only).
  */
 import {
   writeNpy,
@@ -406,7 +405,6 @@ export async function* traceChunks(
   }
 }
 
-/** Approximate size of a cala export, bytes (the trace matrix plus a few MB of metadata). */
 /** The `history_*` and `run_events_json` entries of an export. */
 function historyEntries(h: ExportInput['history']): Record<string, Uint8Array> {
   if (!h) return {};

@@ -49,6 +49,17 @@
   border-radius: 1px;
 }
 
+/* A secondary tick (a floor or a reference): shorter, in the secondary ink. */
+.meter__mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ink-3);
+  border-radius: 1px;
+}
+
 /* A value past the declared range: a square end cap on the clamped side. */
 .meter[data-clamped='over'] .meter__fill {
   border-top-right-radius: 0;
@@ -352,6 +363,17 @@
   background: var(--stage-color);
 }
 
+/* Lead-in: setup work before the stage's own progress, hatched in the stage hue under the fill. */
+.stage-track__lead {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--stage-color) 38%, transparent) 0 3px,
+    transparent 3px 6px
+  );
+}
+
 .stage-track__label {
   position: absolute;
   inset: 0;
@@ -410,7 +432,7 @@
 }
 
 .metric-tile__status--warning {
-  background: var(--status-warning);
+  background: var(--status-warning-mark);
 }
 
 .metric-tile__status--critical {

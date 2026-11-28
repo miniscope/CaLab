@@ -152,7 +152,7 @@ const DEFAULT_REFILL_FRACTION = 0.5;
  * constant in the GPU path, the 75 ms target submit in compute-gpu, is a
  * per-dispatch budget, not a startup one. The longest normal wait here is a
  * one-off startup, expected around a second (pipeline compile and a cold
- * chunk fetch dominate; prep is ~11 ms per trace, see gpu-prep-client.ts),
+ * chunk fetch dominate; prep is serial per trace, see gpu-prep-client.ts),
  * so 10x that leaves room for slow drivers and networks. A false timeout is
  * cheap (the scheduler re-routes to the WASM pool, as for any GPU init
  * failure); no timeout means a hung init keeps the WASM pool at its reduced

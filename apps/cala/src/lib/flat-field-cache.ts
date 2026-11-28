@@ -13,7 +13,7 @@ import type { FlatFieldKey, FlatFieldKeySource, FlatFieldMap } from './flat-fiel
  * solve change makes stored maps wrong: a record of another version, or with
  * none, does not fit, so the run estimates fresh and overwrites it. Version 2 is
  * the solve that models each shift bin's sub-pixel offset; records without a
- * version hold maps with a tissue copy that biases registration (see
+ * version (version 1) hold maps with a tissue copy that biases registration (see
  * tools/cala-eval/results/2026-11-27-ff-motion-gain.md).
  */
 export const FLAT_FIELD_SOLVER_VERSION = 2;

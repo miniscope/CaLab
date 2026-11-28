@@ -11,6 +11,7 @@
  * Everything here is pure (clocks are passed in), so it is unit-tested.
  */
 
+import { STAGE_HUES } from '@calab/ui/palette';
 import { GOVERNOR_LIMIT_TEXT, type GovernorStatus } from './settle-governor.ts';
 
 /** What the slow worker spends its time on (`SlowRunner`); whatever is left of the wall time is idle. */
@@ -572,14 +573,27 @@ export const WORK_KIND_LABELS: Record<WorkKind | 'spare', string> = {
   spare: 'Idle',
 };
 
-/** Colours of the kinds (Okabe-Ito; the Work display's and the History series', and the mock's CSS variables). */
+/**
+ * Colours of the kinds: the one source for the Work display (as its `--k-*` CSS variables) and the
+ * History series (canvas, so resolved hex). Each kind takes its stage's hue: Read frames a light
+ * step of Discover blue, Find cells the Discover hue, Look-back a teal, both settles the Final
+ * settle hue. Background settle shares the settle hue and is told apart by its hatch (HTML, SVG)
+ * or dash (History line), never by colour alone. Validated as a set (dataviz palette validator,
+ * light surface, all pairs).
+ */
 export const KIND_COLOR: Record<WorkKind, string> = {
-  live: '#0072b2',
-  discovery: '#009e73',
-  lookback: '#e69f00',
-  bgSettle: '#e3b1cb',
-  finalSettle: '#a8497d',
+  live: '#84b9f3',
+  discovery: STAGE_HUES.discover,
+  lookback: '#00a888',
+  bgSettle: STAGE_HUES.settle,
+  finalSettle: STAGE_HUES.settle,
 };
+
+/** Colour of idle worker time (the "Idle" kind of the work bar and squares). */
+export const IDLE_COLOR = '#e9e9e9';
+
+/** Ground of Background settle's hatch: the settle tint, under stripes of the settle hue. */
+export const BG_SETTLE_GROUND = STAGE_HUES.settleTint;
 
 /** Which worker a row is. */
 export type WorkerGroup = 'fast' | 'slow' | 'visit' | 'lookback';

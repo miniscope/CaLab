@@ -41,11 +41,22 @@ export const METRIC_SCALE: Record<
   vif: { lo: 1, hi: 3 },
 };
 
-export const PASS_RGB: Rgb = [0x00, 0x9e, 0x73]; // Okabe-Ito bluish green
-export const FAIL_RGB: Rgb = [0xd5, 0x5e, 0x00]; // vermillion
-export const PROBATION_RGB: Rgb = [0xe6, 0x9f, 0x00]; // orange
-export const ESTABLISHED_RGB: Rgb = [0x56, 0xb4, 0xe9]; // sky blue
-export const UNKNOWN_RGB: Rgb = [0x8c, 0x8c, 0x8c];
+/*
+ * QC roles on the FOV, drawn over the dark camera image: pass a light green, fail a coral,
+ * not measured a mid grey (the selected cell is white, `cell-overlay.ts`). Bright enough for the
+ * dark ground and validated as a set against it (dataviz palette validator, dark mode, all
+ * pairs; the green leans to mint so pass and fail stay apart under deuteranopia).
+ */
+/** QC pass. */
+export const PASS_RGB: Rgb = [0x46, 0xd0, 0x9b];
+/** QC fail. */
+export const FAIL_RGB: Rgb = [0xff, 0x7a, 0x59];
+/** Not measured yet (or no value). */
+export const UNKNOWN_RGB: Rgb = [0x88, 0x88, 0x88];
+/** Slow-loop status: on probation (Okabe-Ito orange). */
+export const PROBATION_RGB: Rgb = [0xe6, 0x9f, 0x00];
+/** Slow-loop status: established (Okabe-Ito sky blue). */
+export const ESTABLISHED_RGB: Rgb = [0x56, 0xb4, 0xe9];
 
 const clamp01 = (t: number) => Math.min(1, Math.max(0, t));
 

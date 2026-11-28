@@ -28,7 +28,7 @@ export interface PlaybackDeps {
   paceRun: () => boolean;
   /** The target speed, frames per second. */
   paceFps: () => number;
-  /** The processing rate now, frames per second. */
+  /** The current processing rate, frames per second. */
   rate: () => number;
 }
 

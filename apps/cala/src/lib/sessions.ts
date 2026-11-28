@@ -2,7 +2,7 @@
  * Several recordings (sessions) under one selected folder.
  *
  * Miniscope V4 writes one folder per device inside a time-stamped experiment
- * folder: `data/2026_11_10/14_02_33/My_V4_Miniscope/0.avi, 1.avi, ...` with the
+ * folder: `data/<date>/<time>/My_V4_Miniscope/0.avi, 1.avi, ...` with the
  * device `metaData.json` and `timeStamps.csv` beside the videos, a behaviour
  * camera in `BehavCam_0/` next to it, and an experiment-level `metaData.json`
  * (with `recordingStartTime`) one folder up. Older DAQ software writes
@@ -166,6 +166,7 @@ export function chooseKind(kinds: SeriesKind[]): {
   return { chosen: ordered.length === 1 ? ordered[0] : null, candidates: ordered };
 }
 
+/** A session found under the selected folder: its videos and sidecars. */
 export interface SessionCandidate {
   /** = series.key */
   id: string;
@@ -195,6 +196,7 @@ function dirChain(dir: string): string[] {
   return out;
 }
 
+/** The session candidates of one kind, one per series. */
 export function sessionsForKind(entries: FolderEntry[], kind: SeriesKind): SessionCandidate[] {
   return kind.series.map((series) => {
     const dir = series.dir;
@@ -299,6 +301,7 @@ export function removeItem<T>(items: readonly T[], index: number): T[] {
   return items.filter((_, i) => i !== index);
 }
 
+/** What `validateSessions` compares between sessions. */
 export interface SessionGeometry {
   name: string;
   width: number;
@@ -306,6 +309,7 @@ export interface SessionGeometry {
   bitDepth: number;
   fps: number | null;
 }
+/** The outcome of `validateSessions`: errors block the run, warnings do not. */
 export interface SessionCheck {
   errors: string[];
   warnings: string[];
@@ -339,6 +343,7 @@ export function validateSessions(
   return { errors, warnings };
 }
 
+/** The default name of the results folder. */
 export const RESULTS_DIR = 'cala-results';
 
 function sanitizeSegment(seg: string): string {

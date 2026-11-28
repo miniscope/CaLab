@@ -1,7 +1,7 @@
 import type { EventRow, SessionRow } from '../lib/types.ts';
 
 let n = 0;
-export const T0 = Date.UTC(2026, 10, 1, 12, 0, 0); // Sun 2026-11-01 12:00 UTC
+export const T0 = Date.UTC(2026, 10, 1, 12, 0, 0); // A Sunday, 12:00 UTC
 
 export function session(over: Partial<SessionRow> = {}): SessionRow {
   n++;

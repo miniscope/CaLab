@@ -8,6 +8,7 @@ import { createEffect, createSignal, on, type Accessor } from 'solid-js';
 /** The viewers that remember a tab of their own. */
 export type SideTabViewer = 'run' | 'result';
 
+/** The localStorage key prefix of the remembered tab. */
 export const SIDE_TAB_KEY = 'cala.sideTab';
 
 const key = (viewer: SideTabViewer) => `${SIDE_TAB_KEY}.${viewer}`;
@@ -21,6 +22,7 @@ export function loadSideTab(viewer: SideTabViewer): string | null {
   }
 }
 
+/** Remember a viewer's tab; silent when storage refuses. */
 export function saveSideTab(viewer: SideTabViewer, id: string): void {
   try {
     globalThis.localStorage?.setItem(key(viewer), id);
@@ -29,6 +31,7 @@ export function saveSideTab(viewer: SideTabViewer, id: string): void {
   }
 }
 
+/** A viewer's tab state. */
 export interface SideTab {
   /** The tab shown: the chosen one while it exists (`ids`), else the default. */
   active: Accessor<string>;

@@ -26,7 +26,7 @@ let stage: MotionStage | null = null;
 let pool: StagePool | null = null;
 let epoch = 0;
 let useGpu = true;
-// Pass 1 only: stage A needs the shifts for the flat-field estimator (pass 2 replays them).
+// Discover only: stage A needs the shifts for the flat-field estimator (Extract replays them).
 let sendShifts = false;
 // Finished jobs leave in arrival order; the GPU warp readback of one overlaps the next job's estimate.
 let outChain: Promise<void> = Promise.resolve();

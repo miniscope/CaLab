@@ -64,12 +64,15 @@
   --status-ok-tint: #dcf5e3;
   --status-warning: #8a5a00;
   --status-warning-tint: #fff3d6;
+  /* Warning as a filled mark (status dot, meter fill): the ink reads brown at dot size. Never text. */
+  --status-warning-mark: #e09800;
   --status-critical: #c62828;
   --status-critical-tint: #ffe9e7;
 
   /* cala run stages: full hue (fill, done) and tint (waiting). Validated as one set with the
-     dataviz palette validator. */
-  --stage-discover: #257de0;
+     dataviz palette validator. Discover and Final settle carry white labels (>= 4.5:1),
+     Extract the text ink. Canvas code reads the same values from STAGE_HUES in palette.ts. */
+  --stage-discover: #1f75d7;
   --stage-discover-tint: #dceafb;
   --stage-settle: #b8407e;
   --stage-settle-tint: #f5e1eb;
@@ -90,7 +93,7 @@
   --accent-warm-hover: #333333;
 
   /* Status fills and borders used across the apps; status text uses the --status-* inks. */
-  --warning: #e09800;
+  --warning: var(--status-warning-mark);
   --warning-bg: rgba(224, 152, 0, 0.08);
   --error: #d32f2f;
   --error-bg: rgba(211, 47, 47, 0.06);

@@ -31,10 +31,10 @@ import type { SolverParams } from '@calab/core';
 import type { NpyResult } from '@calab/core';
 
 const DEBOUNCE_MS = 30;
-// With FFT convolutions each iteration is very fast (~0.1-1ms depending on trace length).
-// Small quanta cause excessive main-thread overhead from complete→re-enqueue→dispatch round-trips,
-// starving the UI event loop. 200 iterations keeps quanta under ~40ms for typical traces while
-// reducing round-trip overhead by ~13×. Cancel responsiveness is still ~2ms via BATCH_SIZE yields.
+// With FFT convolutions each iteration is very fast. Small quanta cause excessive main-thread
+// overhead from complete→re-enqueue→dispatch round-trips, starving the UI event loop; 200
+// iterations keeps a quantum short for typical traces while amortising the round trip. Cancel
+// stays responsive because BATCH_SIZE yields happen inside a quantum.
 const QUANTUM_ITERATIONS = 200;
 export const CELL_CARD_ZOOM_WINDOW_S = 20;
 

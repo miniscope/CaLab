@@ -16,7 +16,7 @@ authors:
     affiliation: 'University of California, Los Angeles'
     orcid: 'https://orcid.org/0000-0002-9087-6641'
 repository-code: 'https://github.com/miniscope/CaLab'
-url: 'https://miniscope.github.io/CaLab'
+url: 'https://calab.miniscope.org'
 license: MIT
 keywords:
   - calcium imaging

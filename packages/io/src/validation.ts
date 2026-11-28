@@ -157,7 +157,7 @@ export function validateTraceData(
  *
  * Float arrays get the full {@link validateTraceData} checks. Integer arrays
  * cannot hold NaN/Inf, so they are accepted as valid with basic min/max/mean
- * stats (the import UI's previous behaviour, now shared by every app).
+ * stats (shared by every app).
  */
 export function validateParsedData(data: NpyResult, shape: [number, number]): ValidationResult {
   const arr = data.data;

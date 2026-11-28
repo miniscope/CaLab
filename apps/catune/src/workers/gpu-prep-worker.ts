@@ -9,7 +9,7 @@
 //   pool worker and the GPU treat it), then step_batch to convergence with no
 //   getter calls in between. pool-worker.ts polls
 //   get_reconvolution_with_baseline every 100 ms, which writes the solver's
-//   baseline (CODEBASE-REVIEW-2026-10 §1.2), so its results depend on timing;
+//   baseline, so its results depend on timing;
 //   this reference does not, so it is the fair one to compare the GPU with.
 
 import { initWasm, Solver } from '@calab/core/wasm';

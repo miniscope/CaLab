@@ -19,8 +19,16 @@ export interface StageSegment {
   /** Expected share of the run (any positive unit; segments are sized by weight / total weight). */
   weight: number;
   state: StageState;
-  /** Done fraction in [0, 1] while running (clamped; ignored in the other states). */
-  fraction?: number;
+  /**
+   * Done fraction in [0, 1] while running (clamped; ignored in the other states). `null`: the
+   * stage has no known end (a live stream), so the segment is not a progress bar.
+   */
+  fraction?: number | null;
+  /**
+   * Share of the segment, in [0, 0.5], drawn hatched in the stage hue at its start: a lead-in
+   * phase (setup work before the stage's own progress). The fill covers it like the rest.
+   */
+  leadIn?: number;
   /** Hover text (e.g. the exact count and percent). */
   title?: string;
 }
@@ -54,6 +62,11 @@ function colours(h: StageSegment['hue']): { color: string; tint: string; ink: st
   return { color: `var(--stage-${h})`, tint: `var(--stage-${h}-tint)`, ink: ON_FILL[h] };
 }
 
+/** True when the segment is a progress bar: not off, and with a known end. */
+export function stageMeasured(s: Pick<StageSegment, 'state' | 'fraction'>): boolean {
+  return s.state !== 'off' && s.fraction !== null;
+}
+
 /** Fill fraction of a segment in its state: done 1, running the clamped fraction, else 0. */
 export function stageFill(s: Pick<StageSegment, 'state' | 'fraction'>): number {
   if (s.state === 'done') return 1;
@@ -80,6 +93,8 @@ export function StageTrack(p: StageTrackProps): JSX.Element {
         {(s) => {
           const c = () => colours(s.hue);
           const fill = () => stageFill(s);
+          const measured = () => stageMeasured(s);
+          const lead = () => Math.min(0.5, Math.max(0, s.leadIn ?? 0));
           return (
             <div
               class={`stage-track__seg stage-track__seg--${s.state}`}
@@ -90,15 +105,18 @@ export function StageTrack(p: StageTrackProps): JSX.Element {
                 '--stage-on-fill': c().ink,
                 '--stage-fill': pct(fill()),
               }}
-              role="progressbar"
+              role={measured() ? 'progressbar' : 'img'}
               aria-label={`${s.label}: ${STATE_WORD[s.state]}`}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={s.state === 'off' ? undefined : Math.round(fill() * 100)}
+              aria-valuemin={measured() ? 0 : undefined}
+              aria-valuemax={measured() ? 100 : undefined}
+              aria-valuenow={measured() ? Math.round(fill() * 100) : undefined}
               title={s.title}
               data-state={s.state}
               data-testid={p.testid ? `${p.testid}-${s.id}` : undefined}
             >
+              <Show when={lead() > 0}>
+                <span class="stage-track__lead" style={{ width: pct(lead()) }} aria-hidden="true" />
+              </Show>
               <span class="stage-track__fill" aria-hidden="true" />
               <span class="stage-track__label" aria-hidden="true">
                 <StageLabel seg={s} />
