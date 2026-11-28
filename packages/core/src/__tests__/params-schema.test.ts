@@ -189,3 +189,61 @@ describe('parseJsonWithComments', () => {
     expect(parseJsonWithComments('{"a": "x\\" // y"}')).toEqual({ a: 'x" // y' });
   });
 });
+
+describe('edge cases', () => {
+  it('refuses unknown refs and empty pointers', () => {
+    expect(() =>
+      schemaFields({ type: 'object', properties: { a: { $ref: '#/$defs/Nope' } } }),
+    ).toThrow(/unknown \$ref/);
+    expect(() => setAt({}, '', 1)).toThrow();
+  });
+
+  it('handles pointers through missing or non-object values', () => {
+    expect(getAt({ a: 1 }, '/a/b')).toBeUndefined();
+    expect(getAt({ 'x/y': { '~': 2 } }, '/x~1y/~0')).toBe(2);
+    expect(getAt({ a: 1 }, '')).toEqual({ a: 1 });
+    expect(deleteAt({ a: 1 }, '/b')).toEqual({ a: 1 });
+    expect(deleteAt({ a: 1 }, '/a/b')).toEqual({ a: 1 });
+    expect(deleteAt({ a: { b: 1, c: 2 } }, '/a/b')).toEqual({ a: { c: 2 } });
+    expect(deleteAt({ a: 1 }, '')).toEqual({ a: 1 });
+    expect(setAt({ a: 1 }, '/a/b', 2)).toEqual({ a: { b: 2 } });
+    expect(mergeLayer({ a: 1 }, null)).toEqual({ a: 1 });
+    expect([...layerEntries(SCHEMA, 5).keys()]).toEqual([]);
+    expect([...layerEntries(SCHEMA, { scales: 3, zz: { q: 1 } }).entries()]).toEqual([
+      ['/scales', 3],
+      ['/zz', { q: 1 }],
+    ]);
+  });
+
+  it('checks non-object layers, arrays, nested objects and non-finite numbers', () => {
+    expect(checkLayer(SCHEMA, 3).errors).toEqual([{ pointer: '/', message: 'must be an object' }]);
+    expect(checkLayer(SCHEMA, { scales: 3 }).errors[0].pointer).toBe('/scales');
+    expect(checkField(SCHEMA, '/scales/cell_diameter_px', Infinity)[0].message).toMatch(/finite/);
+    expect(checkField(SCHEMA, '/scales/cell_diameter_px', 'x')[0].message).toMatch(/got string/);
+    expect(checkField(SCHEMA, '/input/crop', { x: 1, w: 2, q: 3 })[0].message).toBe(
+      'is not a field',
+    );
+    const arr: ParamSchema = {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'integer', minimum: 0 }, default: [] },
+        any: { title: 'Any', default: 1 },
+        lo: { type: 'number', maximum: 3, default: 1 },
+      },
+    };
+    expect(checkLayer(arr, { ids: [1, -1] }).errors.map((e) => e.pointer)).toEqual(['/ids/1']);
+    expect(checkLayer(arr, { any: 'x', lo: 4 }).errors.map((e) => e.message)).toEqual([
+      'must be at most 3',
+    ]);
+    const f = schemaFields(arr);
+    expect(f.map((x) => [x.kind, x.level, x.title])).toEqual([
+      ['other', 'internal', 'ids'],
+      ['other', 'internal', 'Any'],
+      ['number', 'internal', 'lo'],
+    ]);
+  });
+
+  it('keeps an unterminated block comment from eating the parser', () => {
+    expect(() => parseJsonWithComments('{"a": 1} /* open')).not.toThrow();
+  });
+});
