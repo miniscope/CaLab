@@ -101,9 +101,9 @@ A record maps to settings like this (`settingsFromRecord`):
 | `final_settle_level`     | Final settle: `thorough` (full pass), `standard` (87 %), `quick` (60 %)                                                                                           | the Final settle select     |
 | `target_speed_fps`       | target speed at the start of the run (0: Max)                                                                                                                     | `?debug&pacefps=`           |
 | `smooth_playback`        | smooth playback                                                                                                                                                   | `?debug&smooth=0`           |
-| `library_mode`           | Joint or Separate (the session setup)                                                                                                                             |                             |
-| `extract_after_discover` | "Extract after Discover" (Run tab)                                                                                                                                |                             |
-| `export_pass_qc_only`    | export only cells that pass QC (Run tab)                                                                                                                          |                             |
+| `library_mode`           | Joint or Separate (the plan step's kind; a single recording is Separate)                                                                                          |                             |
+| `extract_after_discover` | every run Extracts after Discover (true)                                                                                                                          |                             |
+| `export_pass_qc_only`    | export only cells that pass QC (not written by the app's runs)                                                                                                    |                             |
 
 With `?debug`, `__cala.applyRunRecord(recordOrJsonText)` (a record, a whole
 `calab-run.json` or an export's `meta_json.run`) re-applies the store
@@ -133,5 +133,4 @@ Version 1 records are still read: `settle_during_discover: false` is the cap Off
 `true` Background settle as now (the default) at the recorded
 `settle_ceiling_per_live_frame`; `settle_governor` is ignored (the governor is the
 only dose rule since version 2). The
-session setup setting (`library_mode`) is chosen in the setup
-screen. Records from before Refine was removed also hold `refine_runs` (the Refine runs the plan asked for); it is no longer written. `__cala.runRecord()` returns the record of the run so far.
+library mode (`library_mode`) is the kind of the plan step the run was made for. Records from before Refine was removed also hold `refine_runs` (the Refine runs the plan asked for); it is no longer written. `__cala.runRecord()` returns the record of the run so far.

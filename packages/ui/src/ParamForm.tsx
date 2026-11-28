@@ -10,7 +10,10 @@ import {
 import { HelpTip } from './HelpTip.tsx';
 import { SegmentedControl } from './SegmentedControl.tsx';
 
-/** Where a field's value comes from: `default`, `ui` (edited here) or `file:<name>`. */
+/**
+ * Where a field's value comes from: `default`, `ui` (edited here), `file:<name>`, or a layer of
+ * the app's own (`project`, `step`, `stream`).
+ */
 export type ParamSourceTag = string;
 
 /** What the app adds to one field: a test id, a reason it cannot change, a line under it. */
@@ -102,10 +105,17 @@ function sourceLabel(tag: ParamSourceTag): string {
   return tag;
 }
 
+const SOURCE_TITLES: Record<string, string> = {
+  ui: 'Set here',
+  project: "From the project's defaults",
+  step: 'From the plan step',
+  stream: "This session's own value",
+  url: 'From the page address',
+};
+
 function sourceTitle(tag: ParamSourceTag): string {
   if (tag.startsWith('file:')) return `From the config file ${tag.slice(5)}`;
-  if (tag === 'ui') return 'Set here';
-  return tag;
+  return SOURCE_TITLES[tag] ?? tag;
 }
 
 /**

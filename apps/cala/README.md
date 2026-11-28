@@ -213,26 +213,31 @@ folder of several animals is offered as one project per animal (`suggestSplit`).
 through `ZipArchive` from `@calab/io`; `components/ResultView.tsx` hydrates a fresh cell
 store, run history and FOV source and reuses the viewer's panels).
 
-## Multi-session runs
+## Projects and runs
 
-Several sessions of one animal in one run (design: [docs/stages.md](docs/stages.md),
-"Sessions"). Picking a parent folder finds every numbered series at any depth
-and groups them into kinds (`src/lib/sessions.ts`: prefix, or device folder
-name for V4); the Miniscope kind's series are the sessions, behaviour cameras
-are dropped, and an unclear kind asks the user. The session list
-(`components/SessionSetup.tsx`, `lib/session-list.ts`) probes each session in
-the frame worker (`probe`), orders them by `recordingStartTime` (else path) and
-validates size and bit depth (error) and frame rate (warning).
+Whatever is opened is a project (design: [docs/projects.md](docs/projects.md)):
+`OpenFolder` hands every pick (folder, drop, files, recent project) to
+`openProject` in `src/App.tsx`, which opens it in `lib/project-store.ts`. A
+picked folder's numbered series at any depth are grouped into kinds
+(`src/lib/sessions.ts`: prefix, or device folder name for V4); the Miniscope
+kind's series are the sessions, behaviour cameras are dropped, and an unclear
+kind asks the user. Each session is probed in the frame worker (`probe`). A
+project with one session (a recording folder, or a live stream) opens on its
+recording; more open on the session table (`components/ProjectView.tsx`).
+
+Every run is the run of a plan step (`lib/multi-run.ts`, `nextAutoAction` in
+`lib/session-run.ts`, design: [docs/stages.md](docs/stages.md), "Sessions"):
 
 - **Joint:** `FrameSource.openSessions` concatenates the sessions;
   `info.sessions` holds each session's span. One Discover and Extract;
   the export is cut per session (`ExportInput.frameRange`).
-- **Separate:** each session is opened alone and run in turn.
-- `lib/multi-run.ts` drives the run (`nextAutoAction` in `lib/session-run.ts`)
-  and writes the results (`lib/session-export.ts`): `cala-results/<session
-path>/cala-export.npz` and `cala-session.json`, plus `cala-results/cala-run.json`,
-  through the File System Access API (`readwrite` on the picked folder), or as
-  one zip elsewhere. An existing `cala-results` is never overwritten.
+- **Separate:** each session is opened alone and run in turn, a run each. A
+  single recording is a Separate step of one; a live stream too, whose run
+  writes its live traces when it has no Extract.
+- The run's folder is `calab-project/runs/<run id>/` with `calab-run.json`
+  (written before the first frame) and each session's `cala-export.npz` at its
+  stream ref, through the File System Access API (`readwrite` on the picked
+  folder), or as one zip elsewhere (`lib/session-export.ts`).
 - Boundaries: `onSessionBoundary` in `lib/session-boundary.ts` is called by both
   engines and does nothing yet; `session` events go to the run's event log.
 

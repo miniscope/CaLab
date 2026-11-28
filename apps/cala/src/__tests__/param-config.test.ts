@@ -7,11 +7,28 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createRoot } from 'solid-js';
-import { isRefusal, readConfig, type LoadedConfig } from '../lib/config-file.ts';
+import {
+  derivedSettings,
+  isRefusal,
+  readConfig,
+  readConfigFile,
+  readConfigJson,
+  runConfigText,
+  type LoadedConfig,
+} from '../lib/config-file.ts';
 import { createParamLayers, diameterPlan, runLayer, umPerPx } from '../lib/param-layers.ts';
 import { resolveRunParams } from '../lib/params-handle.ts';
 import { runParams, type ParamsLayer } from '../lib/run-params.ts';
 import { initTestWasm } from './wasm-test.ts';
+import { writeNpy, zipFiles } from '@calab/io';
+
+/** A minimal export: `meta_json.npy` holding `meta` (uint8 JSON bytes), stored in a zip. */
+async function npzWithMeta(meta: unknown): Promise<File> {
+  const bytes = new TextEncoder().encode(JSON.stringify(meta));
+  const npy = new Uint8Array(writeNpy(bytes, [bytes.length]));
+  const zip = zipFiles({ 'meta_json.npy': npy }, { level: 0 });
+  return new File([zip], 'cala-export.npz');
+}
 
 beforeAll(initTestWasm);
 
@@ -223,5 +240,165 @@ describe('createParamLayers', () => {
       expect(lookback()).toBe(true);
       dispose();
     });
+  });
+
+  it('layers the project, the step and the stream under a file and the edits', () => {
+    createRoot((dispose) => {
+      let on = true;
+      const p = createParamLayers({
+        '/lookback/enabled': { get: () => on, set: (v) => (on = v === true) },
+      });
+      // No base: no project values.
+      p.setBase([]);
+      expect(p.requested()).toEqual({});
+      expect(on).toBe(true);
+      p.setBase([
+        {
+          tag: 'project',
+          layer: { scales: { cell_diameter_px: 16 }, motion: { template_tau_s: 30 } },
+        },
+        { tag: 'step', layer: { motion: { template_tau_s: 35 } } },
+        { tag: 'stream', layer: { motion: { max_shift_px: 9 }, lookback: { enabled: false } } },
+      ]);
+      // A bound setting follows the layers.
+      expect(on).toBe(false);
+      expect(p.sources()).toEqual({
+        '/scales/cell_diameter_px': 'project',
+        '/motion/template_tau_s': 'step',
+        '/motion/max_shift_px': 'stream',
+        '/lookback/enabled': 'stream',
+      });
+      expect(p.requested()).toEqual({
+        scales: { cell_diameter_px: 16 },
+        motion: { template_tau_s: 35, max_shift_px: 9 },
+        lookback: { enabled: false },
+      });
+      // A file and an edit go over them.
+      p.load(loaded('{"params": {"motion": {"template_tau_s": 50}}}', 'f.json'));
+      p.set('/scales/cell_diameter_px', 12);
+      expect(p.source('/motion/template_tau_s')).toBe('file:f.json');
+      expect(p.source('/scales/cell_diameter_px')).toBe('ui');
+      expect(p.edits()).toEqual({
+        scales: { cell_diameter_px: 12 },
+        motion: { template_tau_s: 50 },
+      });
+      // Reset of a field the project sets: the default, pinned over it.
+      p.reset('/scales/cell_diameter_px');
+      expect(p.value('/scales/cell_diameter_px')).toBe(10);
+      expect(p.source('/scales/cell_diameter_px')).toBe('ui');
+      // Clear: back to the layers, not the defaults.
+      p.clear();
+      expect(p.source('/scales/cell_diameter_px')).toBe('project');
+      expect(on).toBe(false);
+      // Changed elsewhere in the app, a bound setting is not taken back by new layers.
+      on = true;
+      p.setBase([{ tag: 'project', layer: { motion: { template_tau_s: 30 } } }]);
+      expect(on).toBe(true);
+      // Saved into a layer: the edits go, the bound setting stays as it is.
+      p.set('/lookback/enabled', false);
+      p.setBase([
+        { tag: 'project', layer: { motion: { template_tau_s: 30 }, lookback: { enabled: false } } },
+      ]);
+      p.dropEdits();
+      expect(on).toBe(false);
+      expect(p.source('/lookback/enabled')).toBe('project');
+      // A base removed: a bound setting that followed it goes back to its default.
+      p.setBase([]);
+      expect(on).toBe(true);
+      dispose();
+    });
+  });
+});
+
+describe('layer order', () => {
+  it('the stream beats the step, the step beats the project, a file and an edit beat them all', () => {
+    createRoot((dispose) => {
+      const p = createParamLayers();
+      const d = '/scales/cell_diameter_px';
+      p.setBase([
+        { tag: 'project', layer: { scales: { cell_diameter_px: 16 } } },
+        { tag: 'step', layer: { scales: { cell_diameter_px: 15 } } },
+        { tag: 'stream', layer: { scales: { cell_diameter_px: 14 } } },
+      ]);
+      expect([p.value(d), p.source(d)]).toEqual([14, 'stream']);
+      expect(engineOf(p.runLayer()).engine.cell_diameter.px).toBe(14);
+      p.setBase([
+        { tag: 'project', layer: { scales: { cell_diameter_px: 16 } } },
+        { tag: 'step', layer: { scales: { cell_diameter_px: 15 } } },
+      ]);
+      expect([p.value(d), p.source(d)]).toEqual([15, 'step']);
+      p.load(loaded('{"params": {"scales": {"cell_diameter_px": 13}}}', 'f.json'));
+      expect([p.value(d), p.source(d)]).toEqual([13, 'file:f.json']);
+      p.set(d, 12);
+      expect([p.value(d), p.source(d)]).toEqual([12, 'ui']);
+      dispose();
+    });
+  });
+});
+
+describe('a config from a past run', () => {
+  const run = {
+    format: 'calab-run',
+    run: { id: 'r1' },
+    config: {
+      params_version: 1,
+      requested: { scales: { cell_diameter_px: 16 } },
+      sources: { '/scales/cell_diameter_px': 'project' },
+    },
+    derived: {
+      '/time/fps': { value: 30.02, source: 'data' },
+      '/scales/cell_diameter_px': { seed: 16, value: 12.4, source: 'data' },
+      '/not/a/setting': { value: 1 },
+      '/motion/template_tau_s': { value: 'x' },
+    },
+  };
+
+  it('takes what the run asked for; the data values only when pinned', () => {
+    expect(derivedSettings(run)).toEqual({
+      '/time/fps_override': 30.02,
+      '/scales/cell_diameter_px': 12.4,
+    });
+    const asked = readConfigJson(run, 'cala-export.npz') as LoadedConfig;
+    expect(asked.kind).toBe('run');
+    expect(asked.layer).toEqual({ scales: { cell_diameter_px: 16 } });
+    expect(asked.derived).toBeDefined();
+    expect(asked.pinned).toBeUndefined();
+    const pinned = readConfigJson(run, 'cala-export.npz', { pinDerived: true }) as LoadedConfig;
+    expect(pinned.layer).toEqual({
+      scales: { cell_diameter_px: 12.4 },
+      time: { fps_override: 30.02 },
+    });
+    expect(pinned.pinned).toEqual(['/time/fps_override', '/scales/cell_diameter_px']);
+    // The pinned layer resolves: the frame rate is the run's, not the recording's.
+    expect(engineOf(runLayer(pinned.layer)).params.time.fps_override).toBe(30.02);
+  });
+
+  it('refuses a run file of another params version (read from its config)', () => {
+    const r = readConfigJson({ ...run, config: { ...run.config, params_version: 7 } }, 'x');
+    expect(isRefusal(r) && r.message).toContain('Params version 7');
+  });
+
+  it("writes a run's request as a config file, with the run's sources", () => {
+    const text = runConfigText(run, 'note')!;
+    expect(JSON.parse(text)).toMatchObject({
+      format: 'calab-config',
+      note: 'note',
+      params: { scales: { cell_diameter_px: 16 } },
+      sources: { '/scales/cell_diameter_px': 'project' },
+    });
+    expect(runConfigText({ format: 'other' })).toBeNull();
+  });
+
+  it('reads it from an export (.npz): its meta_json.run', async () => {
+    const npz = await npzWithMeta({ format_version: 8, run });
+    const r = (await readConfigFile(npz)) as LoadedConfig;
+    expect(r.name).toBe('cala-export.npz');
+    expect(r.layer).toEqual({ scales: { cell_diameter_px: 16 } });
+    const old = await readConfigFile(await npzWithMeta({ format_version: 7 }));
+    expect(isRefusal(old) && old.message).toContain('older than the run file');
+    const notZip = await readConfigFile(new File(['abc'], 'x.npz'));
+    expect(isRefusal(notZip) && notZip.message).toContain('not a cala export');
+    const json = await readConfigFile(new File([JSON.stringify(run)], 'calab-run.json'));
+    expect(isRefusal(json)).toBe(false);
   });
 });

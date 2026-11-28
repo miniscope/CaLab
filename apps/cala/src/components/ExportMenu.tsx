@@ -8,16 +8,17 @@ import type { CellStore } from '../lib/cell-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
 import type { RunFile } from '@calab/project';
-import type { RunRecordExtras } from '../lib/run-provenance.ts';
-import { extractAfterDiscover, type StageLog } from '../lib/run-stages.ts';
+import type { StageLog } from '../lib/run-stages.ts';
 import { markResultExported } from '../lib/export-state.ts';
 import { reportResultsExported } from '../lib/analytics-integration.ts';
 import { fileFactorNotes } from '../lib/factor-run.ts';
 import { errMsg } from '../lib/errors.ts';
+import { runConfigText } from '../lib/config-file.ts';
 import {
   cadeconCells,
   cadeconIsClassic,
   calaExportBytes,
+  downloadBlob,
   FACTORS_EXPORT_NOTE,
   EXPORT_FORMAT_VERSION,
   factorTailNote,
@@ -49,8 +50,8 @@ export interface ExportMenuProps {
   fps: number;
   /** Bits per pixel of the recording (the exported images' display ranges). */
   bitDepth?: number;
-  /** The run file of the result being exported, with the Run tab's export choices recorded. */
-  runFile?: (extras: RunRecordExtras) => RunFile;
+  /** The run file of the result being exported: its run's, as it is now (null: no run). */
+  runFile?: () => RunFile | null;
 }
 
 /** The export (see the module comment); renders nothing before there is a result. */
@@ -135,14 +136,7 @@ export function ExportMenu(props: ExportMenuProps): JSX.Element {
         bins: props.ui.run.history().toExport(),
         eventsJson: props.ui.run.events().toJSON(),
       },
-      ...(withRecord && props.runFile
-        ? {
-            runFile: props.runFile({
-              extractAfterDiscover: extractAfterDiscover(),
-              passQcOnly: passOnly(),
-            }),
-          }
-        : {}),
+      ...(withRecord && props.runFile?.() ? { runFile: props.runFile()! } : {}),
       version: import.meta.env.VITE_APP_VERSION || 'dev',
     };
   };
@@ -200,6 +194,24 @@ export function ExportMenu(props: ExportMenuProps): JSX.Element {
               }}
             >
               Export for CaDecon{exportResult() ? ` (${keptForCaDecon()} cells)` : ''}
+            </button>
+            <button
+              type="button"
+              class="btn-secondary btn-small"
+              data-testid="export-config"
+              disabled={!props.runFile?.()}
+              title="The settings this run asked for, as a config file (Load config takes it, or this run's .npz, in another recording)."
+              onClick={() => {
+                const run = props.runFile?.();
+                const text = run ? runConfigText(run, `Settings of run ${run.run.id}`) : null;
+                if (!text) return;
+                downloadBlob(
+                  `${fileStem(props.label)}_cala-config.json`,
+                  new Blob([text], { type: 'application/json' }),
+                );
+              }}
+            >
+              Config (.json)
             </button>
             <label class="cala-check">
               <input

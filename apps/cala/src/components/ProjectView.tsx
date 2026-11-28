@@ -7,6 +7,7 @@ import { LIBRARY_MODE_LABEL } from '../lib/session-run.ts';
 import { isPickerAbort, showPicker, supportsDirectoryPicker } from '../lib/directory-picker.ts';
 import type { ReadDirLike } from '../lib/project-io.ts';
 import type { ProjectResult } from '../lib/project-index.ts';
+import { SavedRuns } from './SavedRuns.tsx';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { BoundaryBadge } from './BoundaryBadge.tsx';
 import { DiscoverSettings } from './DiscoverSettings.tsx';
@@ -110,7 +111,7 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
         </h2>
         <p class="cala-sessions__row cala-project__where" data-testid="project-results">
           Results: <code>{p().location().label}/</code>
-          {p().location().kind === 'default' ? ' (in the animal folder)' : ' (chosen folder)'}{' '}
+          {p().location().kind === 'default' ? ' (next to the data)' : ' (chosen folder)'}{' '}
           <Show when={supportsDirectoryPicker() && p().canWrite()}>
             <button type="button" class="btn-secondary btn-small" onClick={chooseResults}>
               Choose another folder...
@@ -119,11 +120,15 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
           <Show when={!p().canWrite()}>
             <span class="cala-muted">
               {' '}
-              This browser cannot write to the folder: each run downloads a zip of its run folder,
-              and changes to the index are not saved.
+              {p().declined()
+                ? 'Writing to the folder was declined'
+                : 'This browser cannot write to the folder'}
+              : each run downloads a zip of its run folder. Until then the project file and the run
+              file are saved in browser storage.
             </span>
           </Show>
         </p>
+        <SavedRuns project={p()} />
         <Show when={p().loading()}>
           <p class="cala-muted" role="status">
             Reading sessions...
