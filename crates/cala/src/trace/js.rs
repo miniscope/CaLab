@@ -12,7 +12,7 @@ use wasm_bindgen::prelude::*;
 use super::library::{IdentityFilter, Library, LibraryBuilder};
 use super::{Footprint, FrameTraces, TraceEngine, TraceError};
 use crate::js_util::{init_panic_hook, js_err};
-use crate::params::loose;
+use crate::params::js::ResolvedParams;
 use crate::preprocess::Dims;
 
 /// Collects footprints and settings for a [`JsTraceLibrary`].
@@ -199,15 +199,14 @@ pub struct JsTraceEngine {
 
 #[wasm_bindgen(js_class = TraceEngine)]
 impl JsTraceEngine {
-    /// `tol` (noise units) and `max_sweeps`: 0 = defaults.
+    /// The solver's settings come from `params` (`trace`).
     #[wasm_bindgen(constructor)]
     pub fn new(
         library: &JsTraceLibrary,
-        tol: f32,
-        max_sweeps: u32,
+        params: &ResolvedParams,
     ) -> Result<JsTraceEngine, JsError> {
         init_panic_hook();
-        let cfg = loose::solver_config(tol, max_sweeps);
+        let cfg = params.engine().solver;
         let inner =
             TraceEngine::new(library.inner.clone(), cfg).map_err(|e| js_err("TraceEngine", e))?;
         Ok(JsTraceEngine {

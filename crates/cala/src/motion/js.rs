@@ -8,109 +8,9 @@
 use wasm_bindgen::prelude::*;
 
 use super::filter::{box_sizes, gaussian_kernel};
-use super::{
-    Frame, Frames, Interpolation, MotionConfig, MotionCorrector, MotionError, MotionRecord,
-    NonRigidConfig, Warper,
-};
+use super::{Frame, Frames, MotionCorrector, MotionError, MotionRecord, Warper};
 use crate::js_util::{init_panic_hook, js_err};
-use crate::params::loose::{self, MotionArgs};
-
-/// Motion-correction options; `new MotionOptions()` gives the defaults.
-#[wasm_bindgen]
-#[derive(Clone, Copy)]
-pub struct MotionOptions {
-    /// Largest rigid shift searched, px.
-    #[wasm_bindgen(js_name = maxShift)]
-    pub max_shift: f32,
-    /// Cap on the automatic registration-region side (0 = none).
-    #[wasm_bindgen(js_name = roiMaxSide)]
-    pub roi_max_side: u32,
-    #[wasm_bindgen(js_name = dogSigmaSmall)]
-    pub dog_sigma_small: f32,
-    #[wasm_bindgen(js_name = dogSigmaLarge)]
-    pub dog_sigma_large: f32,
-    /// Sub-pixel DFT upsampling (<= 1 = parabolic fallback).
-    pub upsample: u32,
-    #[wasm_bindgen(js_name = warmupIterations)]
-    pub warmup_iterations: u32,
-    /// Running-template time constant in frames (0 = frozen).
-    #[wasm_bindgen(js_name = templateTau)]
-    pub template_tau: f32,
-    #[wasm_bindgen(js_name = anchorWeight)]
-    pub anchor_weight: f32,
-    /// Enable piecewise-rigid refinement.
-    pub nonrigid: bool,
-    #[wasm_bindgen(js_name = gridRows)]
-    pub grid_rows: u32,
-    #[wasm_bindgen(js_name = gridCols)]
-    pub grid_cols: u32,
-    #[wasm_bindgen(js_name = maxPatchShift)]
-    pub max_patch_shift: f32,
-    #[wasm_bindgen(js_name = temporalAlpha)]
-    pub temporal_alpha: f32,
-    /// Bilinear instead of bicubic resampling.
-    pub bilinear: bool,
-}
-
-#[wasm_bindgen]
-impl MotionOptions {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> MotionOptions {
-        let c = MotionConfig::default();
-        let n = NonRigidConfig::default();
-        MotionOptions {
-            max_shift: c.max_shift,
-            roi_max_side: c.roi_max_side as u32,
-            dog_sigma_small: c.dog_sigma_small,
-            dog_sigma_large: c.dog_sigma_large,
-            upsample: c.upsample,
-            warmup_iterations: c.warmup_iterations as u32,
-            template_tau: c.template_tau,
-            anchor_weight: c.anchor_weight,
-            nonrigid: false,
-            grid_rows: n.grid.0 as u32,
-            grid_cols: n.grid.1 as u32,
-            max_patch_shift: n.max_patch_shift,
-            temporal_alpha: n.temporal_alpha,
-            bilinear: false,
-        }
-    }
-}
-
-impl Default for MotionOptions {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MotionOptions {
-    /// The motion config: the params fields resolved as params
-    /// ([`loose::motion_config`]), the other options set on the result.
-    fn to_config(self) -> MotionConfig {
-        let mut c = loose::motion_config(MotionArgs {
-            max_shift: self.max_shift,
-            template_tau: self.template_tau,
-            nonrigid: self.nonrigid,
-            grid: (self.grid_rows as usize, self.grid_cols as usize),
-            max_patch_shift: self.max_patch_shift,
-        });
-        c.roi_max_side = self.roi_max_side as usize;
-        c.dog_sigma_small = self.dog_sigma_small;
-        c.dog_sigma_large = self.dog_sigma_large;
-        c.upsample = self.upsample;
-        c.warmup_iterations = self.warmup_iterations as usize;
-        c.anchor_weight = self.anchor_weight;
-        if let Some(n) = c.nonrigid.as_mut() {
-            n.temporal_alpha = self.temporal_alpha;
-        }
-        c.interpolation = if self.bilinear {
-            Interpolation::Bilinear
-        } else {
-            Interpolation::Bicubic
-        };
-        c
-    }
-}
+use crate::params::js::ResolvedParams;
 
 /// Streaming motion corrector (see the Rust `MotionCorrector`).
 #[wasm_bindgen(js_name = MotionCorrector)]
@@ -120,14 +20,16 @@ pub struct JsMotionCorrector {
 
 #[wasm_bindgen(js_class = MotionCorrector)]
 impl JsMotionCorrector {
+    /// The motion settings come from `params` (`motion`).
     #[wasm_bindgen(constructor)]
     pub fn new(
         width: u32,
         height: u32,
-        options: &MotionOptions,
+        params: &ResolvedParams,
     ) -> Result<JsMotionCorrector, JsError> {
         init_panic_hook();
-        MotionCorrector::new(height as usize, width as usize, options.to_config())
+        let cfg = params.engine().motion.clone();
+        MotionCorrector::new(height as usize, width as usize, cfg)
             .map(|inner| JsMotionCorrector { inner })
             .map_err(|e| js_err("MotionCorrector", e))
     }

@@ -27,7 +27,7 @@ use super::{
     chol_inv_upper, compress_tile, quantize, quantize_tiles, tile_config, CompressConfig,
     TileFactors, WindowFactors, WindowStats,
 };
-use crate::params::loose;
+use crate::params::js::ResolvedParams;
 use crate::preprocess::Dims;
 use crate::trace::{FrameTraces, Library, TraceState};
 
@@ -552,13 +552,13 @@ pub struct JsFactorExtractor {
 
 #[wasm_bindgen(js_class = FactorExtractor)]
 impl JsFactorExtractor {
-    /// `library`: `TraceLibrary.toBytes()`. `tol` (noise units) and
-    /// `max_sweeps`: 0 = defaults.
+    /// `library`: `TraceLibrary.toBytes()`. The solver's settings come
+    /// from `params` (`trace`).
     #[wasm_bindgen(constructor)]
-    pub fn new(library: &[u8], tol: f32, max_sweeps: u32) -> Result<JsFactorExtractor, JsError> {
+    pub fn new(library: &[u8], params: &ResolvedParams) -> Result<JsFactorExtractor, JsError> {
         console_error_panic_hook::set_once();
         let lib = Library::from_bytes(library).map_err(|e| js_err("FactorExtractor", e))?;
-        let cfg = loose::solver_config(tol, max_sweeps);
+        let cfg = params.engine().solver;
         let ids = lib.ids().iter().map(|&v| v as u32).collect();
         let inner =
             FactorExtractor::new(Arc::new(lib), cfg).map_err(|e| js_err("FactorExtractor", e))?;
