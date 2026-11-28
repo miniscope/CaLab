@@ -9,18 +9,45 @@ import type { ReadDirLike } from '../lib/project-io.ts';
 import type { ProjectResult } from '../lib/project-index.ts';
 import { SavedRuns } from './SavedRuns.tsx';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
+import type { CellStore } from '../lib/cell-store.ts';
 import { BoundaryBadge } from './BoundaryBadge.tsx';
-import { DiscoverSettings } from './DiscoverSettings.tsx';
+import type { ProjectParams } from './RunSettings.tsx';
+import { SetupSettings } from './SetupSettings.tsx';
 import { errMsg } from '../lib/errors.ts';
 
 interface ProjectViewProps {
   project: ProjectStore;
-  /** The pipeline whose start-time settings (Look-back, Final settle) the plan's runs use. */
-  pipeline?: PipelineStore;
+  /** The pipeline whose settings every run started here reads. */
+  pipeline: PipelineStore;
+  cells: CellStore;
+  /** Saving the settings into the project (Save as project defaults, This session only). */
+  projectParams?: ProjectParams;
   /** Back to the start screen. */
   onClose: () => void;
   /** Open a saved result in the read-only viewer (View results). */
   onView?: (result: ProjectResult) => void;
+  /** Run a one-session project (inside the click: write permission is asked for first). */
+  onRun: () => void;
+  /** Start the plan of a project of several sessions (inside the click). Resolves false when writing was refused. */
+  onStartPlan: () => Promise<boolean>;
+  /** A run was asked for and its recording or stream is being opened. */
+  starting: boolean;
+  /** Why the last Run did not start, or its recording or stream could not be opened (null: none). */
+  runError: string | null;
+}
+
+/** One frame width and rate shared by `infos` (0 where they differ or are unknown). */
+export function sharedFormat(infos: readonly ({ width: number; fps: number | null } | null)[]): {
+  width: number;
+  fps: number;
+} {
+  const known = infos.filter((i): i is { width: number; fps: number | null } => i !== null);
+  if (known.length === 0) return { width: 0, fps: 0 };
+  const same = <T,>(xs: T[]): T | null => (xs.every((x) => x === xs[0]) ? xs[0] : null);
+  return {
+    width: same(known.map((i) => i.width)) ?? 0,
+    fps: same(known.map((i) => i.fps ?? 0)) ?? 0,
+  };
 }
 
 /** A run id (`2026-11-13_14-02-33`) as `11-13 14:02`; other ids as they are. */
@@ -64,9 +91,22 @@ export function stageText(st: SessionStatus, stage: 'discover' | 'extract'): str
   return STATE_TEXT[st[stage]];
 }
 
-/** The project view: the animal's sessions, their cala status, and the run plan. */
+/**
+ * The setup page (`docs/projects.md`): every project opens here, a single recording or a live
+ * stream as a project of one session. The sessions with their cala status and results, the
+ * settings every run reads, and Run (one session) or the run plan (several). Run opens the run
+ * page, which starts at once.
+ */
 export function ProjectView(props: ProjectViewProps): JSX.Element {
   const p = () => props.project;
+  /** A project of one session (a single recording or a live stream): Run, no plan to build. */
+  const single = () => p().single() !== null;
+  const format = () =>
+    sharedFormat(
+      p()
+        .rows()
+        .map((r) => r.planned.info),
+    );
   const [details, setDetails] = createSignal<string | null>(null);
   const [startError, setStartError] = createSignal<string | null>(null);
   const rows = () => p().tableRows();
@@ -89,7 +129,7 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
   async function start(): Promise<void> {
     setStartError(null);
     try {
-      if (!(await p().startPlan()))
+      if (!(await props.onStartPlan()))
         setStartError('The browser did not allow writing to the results folder.');
     } catch (err) {
       setStartError(errMsg(err));
@@ -202,6 +242,16 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
                       </td>
                       <td class="cala-project__session">
                         {r.session.id}
+                        <Show when={p().hasOwnParams(r.session.id)}>
+                          <span
+                            class="cala-muted"
+                            data-testid="row-own-settings"
+                            title="This session has settings of its own in the project file: its runs use them over the project's defaults (values set on this page still win)."
+                          >
+                            {' '}
+                            (own settings)
+                          </span>
+                        </Show>
                         <Show when={r.session.missing}>
                           <span class="cala-muted"> (folder missing)</span>
                         </Show>
@@ -353,144 +403,187 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
             </tbody>
           </table>
         </div>
-        <p class="cala-sessions__row">
-          <button
-            type="button"
-            class="btn-secondary btn-small"
-            data-testid="plan-chain"
-            disabled={p().selected().size < 2}
-            title="One Joint run through the selected sessions in order: one set of cells, so cell ids match across them"
-            onClick={() => p().addToPlan('joint')}
-          >
-            Run selected jointly
-          </button>{' '}
-          <button
-            type="button"
-            class="btn-secondary btn-small"
-            data-testid="plan-separate"
-            disabled={p().selected().size === 0}
-            title="Each selected session gets its own Discover and Extract"
-            onClick={() => p().addToPlan('separate')}
-          >
-            Run selected separately
-          </button>{' '}
-          <span class="cala-muted">{p().selected().size} selected</span>
-        </p>
-      </section>
-
-      <section class="cala-sessions__card cala-project__card" aria-labelledby="project-plan">
-        <h2 id="project-plan" class="cala-sessions__title">
-          Run plan{' '}
-          <span class="cala-muted">
-            {p().plan().length > 0 ? `(${planSummary(p().plan())})` : ''}
-          </span>
-        </h2>
-        <Show
-          when={p().plan().length > 0}
-          fallback={
-            <p class="cala-muted">
-              Select sessions above, then <strong>Run selected jointly</strong> (one Joint run, one
-              library across them) or <strong>Run selected separately</strong> (one run each). Steps
-              run one after another.
-            </p>
-          }
-        >
-          <ol class="cala-sessions__list" data-testid="plan-list">
-            <For each={p().plan()}>
-              {(g, i) => (
-                <li class="cala-sessions__item" data-testid="plan-group">
-                  <span class="cala-sessions__index">{i() + 1}</span>
-                  <div class="cala-sessions__body">
-                    <strong>
-                      {g.kind === 'joint'
-                        ? `${LIBRARY_MODE_LABEL.joint}: ${g.streams.length} sessions`
-                        : `${LIBRARY_MODE_LABEL.separate}: ${g.streams.length} ${g.streams.length === 1 ? 'session' : 'sessions'}`}
-                    </strong>
-                    <span class="cala-sessions__path">{g.streams.join(', ')}</span>
-                  </div>
-                  <div class="cala-sessions__actions">
-                    <button
-                      type="button"
-                      class="btn-secondary btn-small"
-                      aria-label={`Move step ${i() + 1} up`}
-                      disabled={i() === 0}
-                      onClick={() => p().moveGroup(i(), i() - 1)}
-                    >
-                      Up
-                    </button>
-                    <button
-                      type="button"
-                      class="btn-secondary btn-small"
-                      data-testid="plan-remove"
-                      aria-label={`Remove step ${i() + 1}`}
-                      onClick={() => p().removeGroup(i())}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </li>
-              )}
-            </For>
-          </ol>
-        </Show>
-        <For each={p().planErrors()}>
-          {(e) => (
-            <div class="error-card" role="alert" data-testid="plan-error">
-              <span>{e}</span>
-            </div>
-          )}
-        </For>
-        <Show when={props.pipeline}>
-          {(pl) => (
-            <fieldset class="cala-sessions__modes" data-testid="setup-discover-settings">
-              <legend>Discover settings (every run in the plan)</legend>
-              <DiscoverSettings pipeline={pl()} context="setup" />
-            </fieldset>
-          )}
-        </Show>
-        <Show when={p().planState().kind === 'stopped'}>
-          <p class="cala-sessions__warning" data-testid="plan-stopped">
-            The last plan stopped: {(p().planState() as { reason?: string }).reason ?? ''}. Results
-            already written are kept; the steps not finished are left in the plan.
+        <Show when={!single()}>
+          <p class="cala-sessions__row">
+            <button
+              type="button"
+              class="btn-secondary btn-small"
+              data-testid="plan-chain"
+              disabled={p().selected().size < 2}
+              title="One Joint run through the selected sessions in order: one set of cells, so cell ids match across them"
+              onClick={() => p().addToPlan('joint')}
+            >
+              Run selected jointly
+            </button>{' '}
+            <button
+              type="button"
+              class="btn-secondary btn-small"
+              data-testid="plan-separate"
+              disabled={p().selected().size === 0}
+              title="Each selected session gets its own Discover and Extract"
+              onClick={() => p().addToPlan('separate')}
+            >
+              Run selected separately
+            </button>{' '}
+            <span class="cala-muted">{p().selected().size} selected</span>
           </p>
         </Show>
-        <p class="cala-muted cala-sessions__note">
-          Each step is one run, written to <code>{p().location().label}/runs/&lt;run&gt;/</code> as
-          each session finishes; that session's newest result becomes its current one. Data folders
-          are only read.
-        </p>
-        <Show when={startError()}>
-          {(m) => (
-            <div class="error-card" role="alert">
-              <span>{m()}</span>
-            </div>
-          )}
-        </Show>
-        <p class="cala-sessions__row">
-          <button
-            type="button"
-            class="btn-primary"
-            data-testid="plan-start"
-            disabled={p().plan().length === 0 || p().planErrors().length > 0 || p().loading()}
-            onClick={() => void start()}
-          >
-            Start plan
-          </button>{' '}
-          <Show when={p().plan().length > 0}>
-            <button type="button" class="btn-secondary" onClick={() => p().clearPlan()}>
-              Clear plan
-            </button>{' '}
-          </Show>
-          <button
-            type="button"
-            class="btn-secondary"
-            data-testid="project-close"
-            onClick={() => props.onClose()}
-          >
-            Close project
-          </button>
-        </p>
       </section>
+
+      <SetupSettings
+        pipeline={props.pipeline}
+        cells={props.cells}
+        projectParams={props.projectParams}
+        frameWidth={format().width}
+        fps={format().fps}
+        live={p().opened()?.live !== undefined}
+        sessions={p().rows().length}
+      />
+
+      <Show when={single()}>
+        <section class="cala-sessions__card cala-project__card" aria-label="Run">
+          <Show when={props.runError}>
+            {(m) => (
+              <div class="error-card" role="alert" data-testid="run-refused">
+                <span>{m()}</span>
+              </div>
+            )}
+          </Show>
+          <div class="cala-project__run">
+            <button
+              type="button"
+              class="btn-primary"
+              data-testid="run-start"
+              disabled={props.starting || p().loading() || p().planErrors().length > 0}
+              title={p().planErrors()[0] ?? 'Run Discover and Extract with these settings'}
+              onClick={() => props.onRun()}
+            >
+              {props.starting ? 'Opening...' : 'Run'}
+            </button>
+            <button
+              type="button"
+              class="btn-secondary"
+              data-testid="project-close"
+              onClick={() => props.onClose()}
+            >
+              Close project
+            </button>
+          </div>
+        </section>
+      </Show>
+
+      <Show when={!single()}>
+        <section class="cala-sessions__card cala-project__card" aria-labelledby="project-plan">
+          <h2 id="project-plan" class="cala-sessions__title">
+            Run plan{' '}
+            <span class="cala-muted">
+              {p().plan().length > 0 ? `(${planSummary(p().plan())})` : ''}
+            </span>
+          </h2>
+          <Show
+            when={p().plan().length > 0}
+            fallback={
+              <p class="cala-muted">
+                Select sessions above, then <strong>Run selected jointly</strong> (one Joint run,
+                one library across them) or <strong>Run selected separately</strong> (one run each).
+                Steps run one after another.
+              </p>
+            }
+          >
+            <ol class="cala-sessions__list" data-testid="plan-list">
+              <For each={p().plan()}>
+                {(g, i) => (
+                  <li class="cala-sessions__item" data-testid="plan-group">
+                    <span class="cala-sessions__index">{i() + 1}</span>
+                    <div class="cala-sessions__body">
+                      <strong>
+                        {g.kind === 'joint'
+                          ? `${LIBRARY_MODE_LABEL.joint}: ${g.streams.length} sessions`
+                          : `${LIBRARY_MODE_LABEL.separate}: ${g.streams.length} ${g.streams.length === 1 ? 'session' : 'sessions'}`}
+                      </strong>
+                      <span class="cala-sessions__path">{g.streams.join(', ')}</span>
+                    </div>
+                    <div class="cala-sessions__actions">
+                      <button
+                        type="button"
+                        class="btn-secondary btn-small"
+                        aria-label={`Move step ${i() + 1} up`}
+                        disabled={i() === 0}
+                        onClick={() => p().moveGroup(i(), i() - 1)}
+                      >
+                        Up
+                      </button>
+                      <button
+                        type="button"
+                        class="btn-secondary btn-small"
+                        data-testid="plan-remove"
+                        aria-label={`Remove step ${i() + 1}`}
+                        onClick={() => p().removeGroup(i())}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </li>
+                )}
+              </For>
+            </ol>
+          </Show>
+          <For each={p().planErrors()}>
+            {(e) => (
+              <div class="error-card" role="alert" data-testid="plan-error">
+                <span>{e}</span>
+              </div>
+            )}
+          </For>
+          <Show when={p().planState().kind === 'stopped'}>
+            <p class="cala-sessions__warning" data-testid="plan-stopped">
+              The last plan stopped: {(p().planState() as { reason?: string }).reason ?? ''}.
+              Results already written are kept; the steps not finished are left in the plan.
+            </p>
+          </Show>
+          <p class="cala-muted cala-sessions__note">
+            Each step is one run, written to <code>{p().location().label}/runs/&lt;run&gt;/</code>{' '}
+            as each session finishes; that session's newest result becomes its current one. Data
+            folders are only read.
+          </p>
+          <Show when={startError() ?? props.runError}>
+            {(m) => (
+              <div class="error-card" role="alert" data-testid="run-refused">
+                <span>{m()}</span>
+              </div>
+            )}
+          </Show>
+          <p class="cala-sessions__row">
+            <button
+              type="button"
+              class="btn-primary"
+              data-testid="plan-start"
+              disabled={
+                props.starting ||
+                p().plan().length === 0 ||
+                p().planErrors().length > 0 ||
+                p().loading()
+              }
+              onClick={() => void start()}
+            >
+              {props.starting ? 'Opening...' : 'Run plan'}
+            </button>{' '}
+            <Show when={p().plan().length > 0}>
+              <button type="button" class="btn-secondary" onClick={() => p().clearPlan()}>
+                Clear plan
+              </button>{' '}
+            </Show>
+            <button
+              type="button"
+              class="btn-secondary"
+              data-testid="project-close"
+              onClick={() => props.onClose()}
+            >
+              Close project
+            </button>
+          </p>
+        </section>
+      </Show>
     </div>
   );
 }

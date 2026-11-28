@@ -831,16 +831,6 @@
 .cala-sessions__row {
   margin: 0.5rem 0;
 }
-.cala-sessions__modes {
-  margin: 0 0 0.5rem;
-  padding: 0.5rem;
-  border: 1px solid var(--border-default);
-  border-radius: 4px;
-}
-.cala-sessions__mode {
-  display: block;
-  margin: 0.25rem 0;
-}
 .cala-sessions__warning {
   margin: 0.25rem 0;
   color: var(--status-warning);
@@ -952,6 +942,20 @@
 }
 .cala-project .cala-project__card {
   max-width: 76rem;
+}
+.cala-project__card.cala-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.cala-project__card.cala-sheet .cala-sessions__title {
+  margin: 0;
+}
+.cala-project__run {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
 }
 .cala-project__where code {
   overflow-wrap: anywhere;

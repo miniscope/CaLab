@@ -86,6 +86,11 @@ export function SpeedControl(props: {
   live?: boolean;
   /** Frame rate of the recording or stream, Hz (0 when unknown). */
   fps: number;
+  /**
+   * On the setup page, before the recording is open: look-back's availability is not known yet,
+   * so the control is not pinned at Max (the run's start pins it if look-back cannot run).
+   */
+  setup?: boolean;
 }): JSX.Element {
   const s = () => props.pipeline;
   // What the user set in this block, as saved. Not read back from the store: a URL override
@@ -105,7 +110,7 @@ export function SpeedControl(props: {
   onCleanup(() => clearTimeout(timer));
 
   /** Why a target cannot be chosen (no look-back workers); null when it can. Streams have their own state. */
-  const pinned = () => (props.live ? null : s().lookbackBlocked());
+  const pinned = () => (props.live || props.setup ? null : s().lookbackBlocked());
 
   // A pinned control stays at Max whatever was saved; when the pin lifts the saved speed returns.
   // Neither is a user change (their own sources), and neither is saved. A target that came from

@@ -168,14 +168,15 @@ inside Discover.
   **1:1** (one recording pixel per screen pixel). Drag to pan. While zoomed, a minimap
   in the top right shows where you are; click it to jump. Click a cell to select it.
 
-**Run tab.** Opening a recording does not start the run. The Run tab first shows the
-**pre-run sheet**: the settings read when Discover starts, then **Speed**, and the **Run**
-button at the top of the sheet. Discover starts only when you press **Run** (the image
-stays empty until then; the **Raw file** tab already plays the recording). The settings
-are grouped:
+**Setup page.** Opening a folder (one recording or an animal's sessions) or connecting
+to a live stream does not start a run. It shows the **setup page**: the sessions (one or
+many) with their results, the **Settings** read when Discover starts with **Speed** under
+them, and **Run** (one session) or the **Run plan** (several; see
+[Projects](#projects-one-recording-an-animals-sessions-a-live-stream)). **Run** opens the run
+page, which starts at once. The settings are grouped:
 
 - **Cell size**: **Expected cell diameter** in µm at the sample, the largest cells you
-  expect. Under it the sheet shows the diameter in pixels it gives ("= 16 px at 2.00 µm per
+  expect. Under it the page shows the diameter in pixels it gives ("= 16 px at 2.00 µm per
   pixel"). Left empty, the run uses 10 px.
 - **Microscope**: **Sensor pixel size** (µm), **Magnification**, **Binning** and **Sensor
   width** (px). One frame pixel is sensor pixel size × binning ÷ magnification at the
@@ -195,8 +196,17 @@ are grouped:
 
 A setting that is not its default shows where it came from (**set** here, **file**, or
 **project**, **step** or **stream** for a value the project gives: see below) and a ↺ to
-return it to its default. Settings set elsewhere in the app (Speed, the Background settle
-cap, the flat field, the QC pass/fail export filter) are not repeated in the sheet.
+return it to its default. Settings set elsewhere in the app (the Background settle
+cap, the flat field, the QC pass/fail export filter) are not repeated on the setup page.
+
+**Run tab.** The run page has no settings to edit: **Settings used** at the top of the Run
+tab is one line of chips; open it for each value the run asked for and where it came from
+(set on the setup page, a file, the project, the step or the session). Only **Find new
+cells** can change there, as it applies at once. **Restart** (↻) runs again with the same
+settings; **Change settings and run again** (in Settings used) and **Back to setup** in the
+header go back to the setup page with the settings as they were (a running run stops). A
+saved result opened with **View results** has **Run again with these settings**: the setup
+page with that run's settings loaded, as **Load config…** would.
 
 **Config files.** **Save config…** writes the values you set (not the defaults) and where
 each came from to `cala-config.json`; **Load config…** reads one back, for another
@@ -220,21 +230,19 @@ file's) into the project: every run of the project starts from them, in this and
 visits. Tick **This session only** first to save them for this session alone (**Save for
 this session**). A run's settings are, from lowest to highest: the defaults, the project's
 defaults, the plan step's settings, the session's own, a loaded config file, then what you
-set in the sheet. They are kept in `calab-project.json` (`defaults`, each stream's
+set on the setup page. With several sessions the setup page starts from the project's
+defaults; a session with values of its own is marked **(own settings)** in the table, and a
+value you set on the page wins over them in every run. They are kept in `calab-project.json` (`defaults`, each stream's
 `overrides`, each step's `params`; it can be edited by hand) and the run file names the
 layer each value came from.
-
-A live stream has no sheet: connecting starts it. A project's run plan starts from its
-**Start plan** button and has no sheet either.
 
 Once the run has started, the header has icon buttons to pause, restart (↻) and end
 Discover or stop the live run, and the tab shows, in the order you use them:
 
-- **Settings**: one line of chips with the settings the run started with (for example
+- **Settings used**: one line of chips with the settings the run started with (for example
   "Look-back on · Final settle Thorough · Extract after Discover"), and one chip per further
-  value the run asked for ("Expected cell diameter 32 µm"). Click it to open the same fields
-  and the config buttons. Changes **apply on Restart** (↻); in a Separate run of several
-  sessions they apply from the next session.
+  value the run asked for ("Expected cell diameter 32 µm"). Click it for each value asked
+  for and its source, **Find new cells**, and **Change settings and run again**.
 - **Progress**: one row per step, **Discover**, **Final settle** and **Extract**. The
   running step is a panel with its header (name, state, percent, frames per second, time
   left), its bar and its meter rows, each on a fixed range:
@@ -289,7 +297,7 @@ Discover or stop the live run, and the tab shows, in the order you use them:
   Read frames, Find cells, Look-back and Background settle are the jobs of Discover; while
   the Final settle runs, all the work shown is Final settle. Extract runs after it and is
   not in the grid.
-- **Speed** (in Compute, and in the pre-run sheet): **Max**, **Fixed**, **Curve** or
+- **Speed** (in Compute, and on the setup page): **Max**, **Fixed**, **Curve** or
   **Auto**. Max and Fixed show the track, fixed 10 to 500 fps on a log scale: the hatched
   start is where going slower gains nothing, the **floor** tick is the slowest useful
   speed, the **max** tick what this machine reaches now (a target above it behaves as
@@ -413,8 +421,8 @@ Every quantity the run tracks is kept over the whole run, from a 5-minute file t
 A run has two named stages: **Discover** and **Extract** (see
 [docs/stages.md](docs/stages.md)).
 
-1. **Run starts Discover.** Opening a recording loads it and shows the pre-run sheet in
-   the Run tab; pick the settings and press **Run**. The recording is walked in batches. Preprocessing and
+1. **Run starts Discover.** Opening a recording shows its setup page; pick the settings and
+   press **Run**. The run page opens and the recording is walked in batches. Preprocessing and
    motion correction run in workers, so the page stays responsive. The field of view
    shows the frame being processed at the stage you pick, with the cells over it.
 2. **Discover finds cells.** A slow loop looks for new cells and prunes bad ones
@@ -474,15 +482,17 @@ Everything Cala opens is a **project**, and every run writes its results the sam
 into the project's `calab-project/` folder next to the data (raw data folders are only
 read). What you open decides how big the project is:
 
-- **One recording folder** is a project with one session. It opens on the recording with
-  its pre-run sheet; **Run** asks (in Chrome and Edge) for permission to save into the
-  folder, then runs Discover, Extract and writes the results. **Project** in the header
-  shows its table and results; **Restart** (↻) after a run ended starts a new run.
+- **One recording folder** is a project with one session. It opens on its setup page (its
+  one session, the settings and **Run**); **Run** asks (in Chrome and Edge) for permission
+  to save into the folder, then runs Discover, Extract and writes the results. **Back to
+  setup** in the header returns to it; **Restart** (↻) after a run ended starts a new run.
 - **An animal folder** (for a Miniscope V4 tree, the folder that holds
   `date/time/My_V4_Miniscope/`) is a project with one session per recording folder, at
-  any depth; behaviour cameras are left out (see above). It opens on its session table.
+  any depth; behaviour cameras are left out (see above). It opens on the same setup page,
+  with its session table and the run plan.
 - **A live stream** (the live-source field) is a project with one session and no folder:
-  its run starts on connect, and its results download as a zip when it ends.
+  connecting opens its setup page, **Run** connects and runs, and its results download as a
+  zip when it ends. With `?live=<url>` in the address the stream connects and runs at once.
 
 The project's table:
 
@@ -502,13 +512,13 @@ The project's table:
   Extract solves each session with the final library) or **Run selected separately** (each
   its own run). Sessions of a Joint run must have the same size and bit depth. Repeat to
   build a plan, e.g. sessions 1 to 3 chained, 4 and 5 separately, 6 to 8 chained; and
-  **Start plan**. **Discover settings** (Look-back, Final settle) under the plan are used
-  by every run in it; choose them before **Start plan**. Chrome and Edge ask
+  **Run plan**. The **Settings** above the plan are used by every run in it; choose them
+  before **Run plan**. Chrome and Edge ask
   once for permission to save into the animal folder. The steps run one after another;
   each session's results are written, and its current result updated, as soon as it is
   done. If a stage fails or is cancelled the plan stops, keeps what is written, and
-  leaves the unfinished steps in the plan. **Back to project** in the header returns to
-  the table. A rig with two Miniscopes gives one session per Miniscope; run those as
+  leaves the unfinished steps in the plan. **Back to setup** in the header returns to
+  the setup page. A rig with two Miniscopes gives one session per Miniscope; run those as
   **Separate**.
 - **Current result.** A session's newest result is its current one. Older results are
   kept; **Set current** in its results makes an older one current again.
@@ -517,7 +527,7 @@ The project's table:
   clicked cell's footprint and trace, the History plots and event log, the stages that
   ran and the flat field, in the same tabs (the first, **Result**, says what was
   saved; the strip shows the traces being read). It is read-only: to Discover or Extract again, start a new run
-  from the table. **Back to project** returns to the table. Results saved by older
+  from the table. **Back to setup** returns to the table. Results saved by older
   versions open too; what they lack (the images, the History) says "not in this
   export".
 - **Where results go.** Each run gets its own folder below `calab-project/runs/`, with

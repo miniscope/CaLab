@@ -22,7 +22,7 @@ import { StepClock } from '../lib/step-view.ts';
 import type { HistoryUi } from './HistoryPanel.tsx';
 import { FACTORS_LIVE_NOTE } from '../lib/factor-run.ts';
 import type { SettingsContext } from './DiscoverSettings.tsx';
-import { PreRunSheet, SettingsSummary, type ProjectParams } from './RunSettings.tsx';
+import { SettingsSummary } from './RunSettings.tsx';
 import { SidePanel } from './SidePanel.tsx';
 import { Compute } from './Compute.tsx';
 import { TimeStrip } from './TimeStrip.tsx';
@@ -80,17 +80,15 @@ export interface RunPanelProps {
   sessionMode?: LibraryMode | null;
   /** How many sessions that run has (1: a single recording or a stream). */
   sessions?: number;
-  /** Run on the pre-run sheet: starts the open recording's run (absent: Discover alone). */
-  onRun?: () => void;
   /** Restart (absent: Discover again in place). */
   onRestart?: () => void;
-  /** Saving the sheet's values into the open project (absent: no project). */
-  projectParams?: ProjectParams;
+  /** Back to the setup page with the settings, to change them and run again (absent: none). */
+  onChangeSettings?: () => void;
 }
 
 /**
- * The run (docs/stages.md). Before the first run of a recording: the pre-run sheet (settings
- * and Run) and Compute with the Speed control. Then: a summary line of the settings, the step
+ * The run (docs/stages.md). The run page opens from Run on the setup page and starts at once, so
+ * there is no sheet here: a read-only line of the settings used, the step
  * list (the running step as a panel with its meter rows, every other step as one line), the
  * time strip (convergence, speed and work on one time axis), Compute (motion, Speed, worker
  * squares), and Extract. Extract follows Discover only if "Extract after Discover" is on (the
@@ -116,9 +114,6 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   };
   const pass1Busy = () => s().status() === 'running' || s().status() === 'paused';
 
-  const inSessionRun = () => props.sessionMode != null;
-  /** Before the first run of one recording: the pre-run sheet. A session run starts by itself. */
-  const prerun = () => s().status() === 'idle' && !inSessionRun() && !props.live;
   /** When a change to a start-time setting takes effect (`DiscoverSettings`). */
   const settingsContext = (): SettingsContext =>
     (props.sessions ?? 1) < 2
@@ -283,7 +278,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       title="Run"
       class="cala-run"
       actions={
-        <Show when={!prerun()}>
+        <>
           <Show when={pass1Busy()}>
             <button
               type="button"
@@ -299,7 +294,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             type="button"
             class="btn-secondary btn-small cala-icon-btn"
             aria-label="Restart"
-            title="Start Discover again from frame 0 with the settings as they are now (a new run: Extract starts over)"
+            title="Run again from frame 0 with the same settings (a new run: Extract starts over). To change them: Settings used, Change settings and run again."
             onClick={() => (props.onRestart ? props.onRestart() : void s().start())}
           >
             <Icon name="restart" size={14} />
@@ -320,258 +315,228 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               <Icon name="stop" size={14} />
             </button>
           </Show>
-        </Show>
+        </>
       }
     >
-      {/* ---- 1. Settings: the pre-run sheet, then a summary line ---- */}
-      <Show when={!props.live}>
-        <Show
-          when={prerun()}
-          fallback={
-            <SettingsSummary
-              pipeline={s()}
-              context={settingsContext()}
-              extractRunning={p().status() === 'running'}
-              frameWidth={props.frameWidth}
-              projectParams={props.projectParams}
-            />
-          }
-        >
-          <PreRunSheet
-            pipeline={s()}
-            context="prerun"
-            frameWidth={props.frameWidth}
-            projectParams={props.projectParams}
-            onRun={() => (props.onRun ? props.onRun() : void s().start())}
-          />
-        </Show>
-      </Show>
+      {/* ---- 1. Settings: what the run started with, read-only ---- */}
+      <SettingsSummary
+        pipeline={s()}
+        context={settingsContext()}
+        extractRunning={p().status() === 'running'}
+        frameWidth={props.frameWidth}
+        live={props.live}
+        onChangeSettings={props.onChangeSettings}
+      />
 
       {/* ---- 2. Progress: the steps, the convergence, speed and workers ---- */}
-      <Show when={!prerun()}>
-        <section
-          class="cala-run__section"
-          aria-labelledby="run-progress"
-          data-testid="run-progress"
-        >
-          <h3 id="run-progress" class="cala-run__heading">
-            Progress
-          </h3>
-          <div class="cala-run__status">
-            <span class="cala-status" data-testid="pipeline-status">
-              {statusText()}
-            </span>
-            <Show when={inspectedText()}>
-              {(text) => (
-                <button
-                  type="button"
-                  class="cala-inspected"
-                  data-testid="inspected-time"
-                  title="The inspected time (click a plot to pin one; Esc or this button returns to now)"
-                  onClick={() => win().clearInspected()}
-                >
-                  ◉ {text()} ✕
-                </button>
-              )}
-            </Show>
-          </div>
-          {/* `?debug`: who is doing what, once a second, as plain text (the Work display shows it as a grid). */}
-          <Show when={DEBUG}>
-            <pre class="cala-readout cala-run__line" data-testid="work-debug">
-              {workText(
-                s().work(),
-                s().workFastMaxFps(),
-                c().status()?.lookback?.csettle?.governor,
-              )}
-              {'\n'}
-              {s().floorLine() || 'floor: waiting for a status'}
-            </pre>
-          </Show>
-          <Show when={s().live()}>
-            {(live) => (
-              <p class="cala-readout cala-run__line" data-testid="live-readout">
-                live: {live().received.toLocaleString()} received
-                <Show when={live().dropped + live().missed > 0}>
-                  {' '}
-                  &middot; {live().dropped.toLocaleString()} dropped
-                  <Show when={live().missed > 0}>
-                    {' '}
-                    ({live().missed.toLocaleString()} missed at the source)
-                  </Show>
-                </Show>{' '}
-                &middot; lag {live().lagFrames} frames ({live().lagMs.toFixed(0)} ms)
-              </p>
-            )}
-          </Show>
-          <div class="cala-run__steps">
-            <StepBlock
-              step={step('discover')}
-              facts={discoverFacts()}
-              seconds={seconds('discover')}
-              body={
-                <DiscoverBody pipeline={s()} cells={c()} step={step('discover')} fps={props.fps} />
-              }
-            />
-            <StepBlock
-              step={step('settle')}
-              facts={settleFacts()}
-              seconds={seconds('settle')}
-              line={
-                <Show when={lookbackNote()}>
-                  <span class="cala-stepline__fact" data-testid="lookback-readout">
-                    {lookbackNote()}
-                  </span>
-                </Show>
-              }
-              body={
-                <SettleBody pipeline={s()} cells={c()} step={step('settle')}>
-                  <div class="cala-run__footer">
-                    <span class="cala-step__note cala-wrap" data-testid="lookback-readout">
-                      {lookbackNote()}
-                    </span>
-                    <Show when={props.onStopSettling}>
-                      <button
-                        type="button"
-                        class="btn-secondary btn-small"
-                        data-testid="lookback-stop-settling"
-                        title="Stop the Final settle now: the footprints refined so far become the final library."
-                        onClick={() => props.onStopSettling?.()}
-                      >
-                        Stop Final settle
-                      </button>
-                    </Show>
-                  </div>
-                </SettleBody>
-              }
-            />
-            <Show when={extracts()}>
-              <StepBlock
-                step={step('extract')}
-                facts={extractFacts()}
-                seconds={seconds('extract')}
-                body={<ExtractBody pipeline={s()} pass2={p()} cells={c()} />}
-              />
-            </Show>
-          </div>
-        </section>
-        <TimeStrip pipeline={s()} cells={c()} ui={props.ui} live={props.live} visible={shown()} />
-      </Show>
-      <Compute pipeline={s()} cells={c()} live={props.live} fps={props.fps} workers={!prerun()} />
-      <Show when={!prerun()}>
-        <div class="cala-run__footer">
-          <Show when={props.compress}>
-            {(compress) => (
-              <span class="cala-muted" data-testid="compress-readout">
-                {compress().error() ?? compressReadout(compress().status(), compress().backfill())}
-              </span>
-            )}
-          </Show>
-          <Show when={props.review}>
-            {(review) => (
-              <span
-                class="cala-muted"
-                data-testid="review-readout"
-                title="History review: cells the slow loop missed, looked for in the compressed history."
+      <section class="cala-run__section" aria-labelledby="run-progress" data-testid="run-progress">
+        <h3 id="run-progress" class="cala-run__heading">
+          Progress
+        </h3>
+        <div class="cala-run__status">
+          <span class="cala-status" data-testid="pipeline-status">
+            {statusText()}
+          </span>
+          <Show when={inspectedText()}>
+            {(text) => (
+              <button
+                type="button"
+                class="cala-inspected"
+                data-testid="inspected-time"
+                title="The inspected time (click a plot to pin one; Esc or this button returns to now)"
+                onClick={() => win().clearInspected()}
               >
-                {review().error() ??
-                  reviewReadout(
-                    review().status(),
-                    c().status()?.counters.reviewAdds ?? 0,
-                    review().every,
-                  )}
-              </span>
+                ◉ {text()} ✕
+              </button>
             )}
           </Show>
         </div>
-        <Show when={c().status()?.reservoirWarning}>
-          {(w) => (
-            <p class="cala-warning" role="status" data-testid="statusbar-warning">
-              {w()}
-            </p>
-          )}
+        {/* `?debug`: who is doing what, once a second, as plain text (the Work display shows it as a grid). */}
+        <Show when={DEBUG}>
+          <pre class="cala-readout cala-run__line" data-testid="work-debug">
+            {workText(s().work(), s().workFastMaxFps(), c().status()?.lookback?.csettle?.governor)}
+            {'\n'}
+            {s().floorLine() || 'floor: waiting for a status'}
+          </pre>
         </Show>
-        <Show when={s().error()}>
-          {(message) => (
-            <div class="error-card" role="alert">
-              <span>{message()}</span>
-            </div>
-          )}
-        </Show>
-        <Show when={c().error()}>
-          {(message) => (
-            <div class="error-card" role="alert">
-              <span>Cell discovery stopped: {message()}</span>
-            </div>
-          )}
-        </Show>
-
-        {/* ---- 3. Results: Extract (the export is on the run rail) ---- */}
-        <section class="cala-run__section" aria-labelledby="run-results" data-testid="run-results">
-          <h3 id="run-results" class="cala-run__heading">
-            Results
-          </h3>
-          <Show when={props.live}>
-            <p class="cala-muted cala-run__line" data-testid="live-stage-note">
-              {props.factorRun ? FACTORS_LIVE_NOTE : LIVE_NOTE}
-            </p>
-          </Show>
-          <Show when={!props.live && !auto()}>
-            <p class="cala-muted cala-run__line" data-testid="discover-only-hint">
-              {DISCOVER_ONLY_NOTE}
-            </p>
-          </Show>
-          <Show when={!props.live && auto()}>
-            <Show
-              when={showNextStepHint({
-                live: props.live === true,
-                discover: s().status() === 'done' ? 'done' : 'running',
-                extract: p().status(),
-              })}
-            >
-              <p class="cala-muted cala-run__line" data-testid="next-step-hint">
-                {NEXT_STEP_HINT}
-              </p>
-            </Show>
-          </Show>
-          <div class="cala-run__footer">
-            <Show
-              when={p().status() !== 'running' && extracts() && auto()}
-              fallback={
-                <Show when={extracts() && p().status() === 'running'}>
-                  <button
-                    type="button"
-                    class="btn-secondary btn-small"
-                    onClick={() => p().cancel()}
-                  >
-                    Cancel Extract
-                  </button>
+        <Show when={s().live()}>
+          {(live) => (
+            <p class="cala-readout cala-run__line" data-testid="live-readout">
+              live: {live().received.toLocaleString()} received
+              <Show when={live().dropped + live().missed > 0}>
+                {' '}
+                &middot; {live().dropped.toLocaleString()} dropped
+                <Show when={live().missed > 0}>
+                  {' '}
+                  ({live().missed.toLocaleString()} missed at the source)
                 </Show>
-              }
-            >
-              <button
-                type="button"
-                class="btn-secondary btn-small"
-                data-testid="pass2-run"
-                disabled={p().blockedReason() !== null}
-                title={
-                  p().blockedReason() ??
-                  'Extract: solve the traces of every frame with the final footprints, frozen.'
-                }
-                onClick={() => void p().run()}
-              >
-                {p().status() === 'done' ? 'Extract again' : 'Extract'}
-              </button>
-            </Show>
-            <span
-              class="cala-status cala-run__pass2"
-              data-testid="pass2-status"
-              data-state={p().status()}
-            >
-              {pass2Text()}
+              </Show>{' '}
+              &middot; lag {live().lagFrames} frames ({live().lagMs.toFixed(0)} ms)
+            </p>
+          )}
+        </Show>
+        <div class="cala-run__steps">
+          <StepBlock
+            step={step('discover')}
+            facts={discoverFacts()}
+            seconds={seconds('discover')}
+            body={
+              <DiscoverBody pipeline={s()} cells={c()} step={step('discover')} fps={props.fps} />
+            }
+          />
+          <StepBlock
+            step={step('settle')}
+            facts={settleFacts()}
+            seconds={seconds('settle')}
+            line={
+              <Show when={lookbackNote()}>
+                <span class="cala-stepline__fact" data-testid="lookback-readout">
+                  {lookbackNote()}
+                </span>
+              </Show>
+            }
+            body={
+              <SettleBody pipeline={s()} cells={c()} step={step('settle')}>
+                <div class="cala-run__footer">
+                  <span class="cala-step__note cala-wrap" data-testid="lookback-readout">
+                    {lookbackNote()}
+                  </span>
+                  <Show when={props.onStopSettling}>
+                    <button
+                      type="button"
+                      class="btn-secondary btn-small"
+                      data-testid="lookback-stop-settling"
+                      title="Stop the Final settle now: the footprints refined so far become the final library."
+                      onClick={() => props.onStopSettling?.()}
+                    >
+                      Stop Final settle
+                    </button>
+                  </Show>
+                </div>
+              </SettleBody>
+            }
+          />
+          <Show when={extracts()}>
+            <StepBlock
+              step={step('extract')}
+              facts={extractFacts()}
+              seconds={seconds('extract')}
+              body={<ExtractBody pipeline={s()} pass2={p()} cells={c()} />}
+            />
+          </Show>
+        </div>
+      </section>
+      <TimeStrip pipeline={s()} cells={c()} ui={props.ui} live={props.live} visible={shown()} />
+      <Compute pipeline={s()} cells={c()} live={props.live} fps={props.fps} workers={true} />
+      <div class="cala-run__footer">
+        <Show when={props.compress}>
+          {(compress) => (
+            <span class="cala-muted" data-testid="compress-readout">
+              {compress().error() ?? compressReadout(compress().status(), compress().backfill())}
             </span>
-          </div>
-        </section>
+          )}
+        </Show>
+        <Show when={props.review}>
+          {(review) => (
+            <span
+              class="cala-muted"
+              data-testid="review-readout"
+              title="History review: cells the slow loop missed, looked for in the compressed history."
+            >
+              {review().error() ??
+                reviewReadout(
+                  review().status(),
+                  c().status()?.counters.reviewAdds ?? 0,
+                  review().every,
+                )}
+            </span>
+          )}
+        </Show>
+      </div>
+      <Show when={c().status()?.reservoirWarning}>
+        {(w) => (
+          <p class="cala-warning" role="status" data-testid="statusbar-warning">
+            {w()}
+          </p>
+        )}
       </Show>
+      <Show when={s().error()}>
+        {(message) => (
+          <div class="error-card" role="alert">
+            <span>{message()}</span>
+          </div>
+        )}
+      </Show>
+      <Show when={c().error()}>
+        {(message) => (
+          <div class="error-card" role="alert">
+            <span>Cell discovery stopped: {message()}</span>
+          </div>
+        )}
+      </Show>
+
+      {/* ---- 3. Results: Extract (the export is on the run rail) ---- */}
+      <section class="cala-run__section" aria-labelledby="run-results" data-testid="run-results">
+        <h3 id="run-results" class="cala-run__heading">
+          Results
+        </h3>
+        <Show when={props.live}>
+          <p class="cala-muted cala-run__line" data-testid="live-stage-note">
+            {props.factorRun ? FACTORS_LIVE_NOTE : LIVE_NOTE}
+          </p>
+        </Show>
+        <Show when={!props.live && !auto()}>
+          <p class="cala-muted cala-run__line" data-testid="discover-only-hint">
+            {DISCOVER_ONLY_NOTE}
+          </p>
+        </Show>
+        <Show when={!props.live && auto()}>
+          <Show
+            when={showNextStepHint({
+              live: props.live === true,
+              discover: s().status() === 'done' ? 'done' : 'running',
+              extract: p().status(),
+            })}
+          >
+            <p class="cala-muted cala-run__line" data-testid="next-step-hint">
+              {NEXT_STEP_HINT}
+            </p>
+          </Show>
+        </Show>
+        <div class="cala-run__footer">
+          <Show
+            when={p().status() !== 'running' && extracts() && auto()}
+            fallback={
+              <Show when={extracts() && p().status() === 'running'}>
+                <button type="button" class="btn-secondary btn-small" onClick={() => p().cancel()}>
+                  Cancel Extract
+                </button>
+              </Show>
+            }
+          >
+            <button
+              type="button"
+              class="btn-secondary btn-small"
+              data-testid="pass2-run"
+              disabled={p().blockedReason() !== null}
+              title={
+                p().blockedReason() ??
+                'Extract: solve the traces of every frame with the final footprints, frozen.'
+              }
+              onClick={() => void p().run()}
+            >
+              {p().status() === 'done' ? 'Extract again' : 'Extract'}
+            </button>
+          </Show>
+          <span
+            class="cala-status cala-run__pass2"
+            data-testid="pass2-status"
+            data-state={p().status()}
+          >
+            {pass2Text()}
+          </span>
+        </div>
+      </section>
     </SidePanel>
   );
 }

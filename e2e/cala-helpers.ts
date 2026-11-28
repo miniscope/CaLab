@@ -3,11 +3,10 @@ import type { Page } from '@playwright/test';
 import { expect } from './fixtures.ts';
 
 /**
- * Press Run on the pre-run sheet: opening a recording loads it and shows the sheet, and
- * Discover starts only on Run. The sheet is in the Run tab, which this selects first.
+ * Press Run on the setup page: opening a folder shows its sessions and the settings, and Run
+ * opens the run page, which starts at once.
  */
 export async function startRun(page: Page): Promise<void> {
-  await page.getByRole('tab', { name: 'Run', exact: true }).click();
   await page.getByTestId('run-start').click();
 }
 

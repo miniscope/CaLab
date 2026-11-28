@@ -515,6 +515,19 @@ export function createProjectStore(deps: ProjectDeps) {
   }
 
   /**
+   * Point the settings layers at the setup page's scope: a one-stream project's run (its step and
+   * stream, so This session only saves there), else the project's defaults alone.
+   */
+  function setupLayers(): void {
+    if (!writer) return;
+    const one = single();
+    if (one) {
+      const ref = one.planned.stream;
+      applyLayers(stepFor([ref], writer.project.plan, 'separate')?.id ?? null, [ref]);
+    } else applyLayers(null, []);
+  }
+
+  /**
    * Read the project file and the run files; rebuild the index; bring both in line with the scan.
    * Resolves whether the folder had a project file.
    */
@@ -721,11 +734,7 @@ export function createProjectStore(deps: ProjectDeps) {
         );
       }
       const existing = await load(true);
-      const one = single();
-      if (one && !error()) {
-        const ref = one.planned.stream;
-        applyLayers(stepFor([ref], writer!.project.plan, 'separate')?.id ?? null, [ref]);
-      }
+      if (!error()) setupLayers();
       setSummary({
         sessions: projectStreamRefs(writer!.project).length,
         live: o.live !== undefined,
@@ -1131,6 +1140,14 @@ export function createProjectStore(deps: ProjectDeps) {
     storeKey,
     /** The run the settings layers are for (null: none): its step and streams. */
     layersFor,
+    /** Point the settings layers at the setup page (after a run, before the next). */
+    setupLayers,
+    /** The stream `ref` has cala settings of its own in the project file. */
+    hasOwnParams: (ref: string): boolean => {
+      const p = project();
+      const own = p ? streamOf(p, ref)?.overrides?.[CALA_APP] : undefined;
+      return typeof own === 'object' && own !== null && Object.keys(own).length > 0;
+    },
     /** The project file came from browser storage at this open. */
     fromDraft,
     savedRuns,
