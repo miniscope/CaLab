@@ -1,6 +1,6 @@
 import { createEffect, createSignal, on, Show, type JSX } from 'solid-js';
-import { Icon, SegmentedControl } from '@calab/ui';
-import { formatClock, formatElapsed, windowPresets } from '@calab/ui/chart';
+import { Icon } from '@calab/ui';
+import { formatClock, formatElapsed } from '@calab/ui/chart';
 import type { CellStore } from '../lib/cell-store.ts';
 import { compressReadout, type CompressStore } from '../lib/compress-store.ts';
 import { reviewReadout, type ReviewStore } from '../lib/review-store.ts';
@@ -20,14 +20,13 @@ import {
   type StageName,
 } from '../lib/run-stages.ts';
 import { StepClock } from '../lib/step-view.ts';
-import { AspectPlot } from '../lib/plot-size.tsx';
-import { GroupPlot, RunStrip, type HistoryUi } from './HistoryPanel.tsx';
+import type { HistoryUi } from './HistoryPanel.tsx';
 import { FACTORS_LIVE_NOTE } from '../lib/factor-run.ts';
 import type { SettingsContext } from './DiscoverSettings.tsx';
 import { PreRunSheet, SettingsSummary } from './RunSettings.tsx';
 import { SidePanel } from './SidePanel.tsx';
-import { SpeedControl } from './SpeedControl.tsx';
-import { WorkDisplay } from './WorkDisplay.tsx';
+import { Compute } from './Compute.tsx';
+import { TimeStrip } from './TimeStrip.tsx';
 import {
   createLookbackFacts,
   createSteps,
@@ -45,20 +44,6 @@ const DEBUG =
 const SETUP_LABEL = {
   calibrate: 'Calibrating (FOV mask, hot pixels)',
   'motion-warmup': 'Building the motion template',
-} as const;
-
-/** Badge text and tooltip for where motion correction runs. */
-const MOTION_BACKEND = {
-  webgpu: ['Motion: WebGPU', 'Motion prefilter and warp run on the GPU.'],
-  'wasm-off': ['Motion: CPU', 'WebGPU turned off with ?gpu=0.'],
-  'wasm-unavailable': [
-    'Motion: CPU',
-    'WebGPU is not available in this browser (or cannot run these settings).',
-  ],
-  'wasm-failed': [
-    'Motion: CPU',
-    'WebGPU failed during the run; continued on the CPU. See the console.',
-  ],
 } as const;
 
 const n0 = (v: number): string => Math.round(v).toLocaleString('en-US');
@@ -95,11 +80,12 @@ export interface RunPanelProps {
 }
 
 /**
- * The run (docs/stages.md). Before the first run of a recording: the pre-run sheet (settings,
- * Speed, Run). Then: a summary line of the settings, the step list (the running step as a
- * panel with its meter rows, every other step as one line), the convergence over the shared
- * time window, Speed and Workers, and Extract. Extract follows Discover only if "Extract after
- * Discover" is on (the default). The export is on the run rail (`ExportMenu`).
+ * The run (docs/stages.md). Before the first run of a recording: the pre-run sheet (settings
+ * and Run) and Compute with the Speed control. Then: a summary line of the settings, the step
+ * list (the running step as a panel with its meter rows, every other step as one line), the
+ * time strip (convergence, speed and work on one time axis), Compute (motion, Speed, worker
+ * squares), and Extract. Extract follows Discover only if "Extract after Discover" is on (the
+ * default). The export is on the run rail (`ExportMenu`).
  */
 export function RunPanel(props: RunPanelProps): JSX.Element {
   const s = () => props.pipeline;
@@ -118,12 +104,6 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       return `${prefix}${SETUP_LABEL[setup.phase]} ${setup.done} / ${setup.total}`;
     }
     return st === 'paused' ? 'Paused' : 'Running';
-  };
-  const backend = () => {
-    if (s().fps() <= 0) return null;
-    const b = s().motionBackend();
-    if (!b) return null;
-    return { key: b, text: MOTION_BACKEND[b][0], title: MOTION_BACKEND[b][1] };
   };
   const pass1Busy = () => s().status() === 'running' || s().status() === 'paused';
 
@@ -212,30 +192,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     }
   };
 
-  // ---- convergence over the shared time window ----
+  // ---- the inspected time (pinned on a plot) ----
   const h = () => props.ui.run;
   const win = () => props.ui.window;
-  const presets = () => windowPresets(props.ui.axisEnd());
-  const windowValue = () => {
-    const st = win().state;
-    if (st.mode === 'last') return `last-${st.lastS}`;
-    return st.mode;
-  };
-  const windowOptions = () => [
-    { value: 'run', label: 'Whole run', title: 'The whole run (a file: to its end; live: to now)' },
-    ...presets().map((p) => ({
-      value: `last-${p.s}`,
-      label: p.label,
-      title: `The last ${p.label}, following now`,
-    })),
-    ...(win().state.mode === 'brush'
-      ? [{ value: 'brush', label: 'Brush', title: 'A range brushed on the strip or a plot' }]
-      : []),
-  ];
-  const setWindow = (v: string) => {
-    if (v === 'run') win().setRun();
-    else if (v.startsWith('last-')) win().setLast(Number(v.slice(5)));
-  };
   const inspectedText = () => {
     const t = win().inspected();
     if (t === null) return null;
@@ -304,16 +263,17 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       class="cala-run"
       actions={
         <Show when={!prerun()}>
-          <button
-            type="button"
-            class="btn-secondary btn-small cala-icon-btn"
-            disabled={!pass1Busy()}
-            aria-label={s().status() === 'paused' ? 'Resume' : 'Pause'}
-            title={s().status() === 'paused' ? 'Resume' : 'Pause'}
-            onClick={() => s().togglePause()}
-          >
-            <Icon name={s().status() === 'paused' ? 'play' : 'pause'} size={14} />
-          </button>
+          <Show when={pass1Busy()}>
+            <button
+              type="button"
+              class="btn-secondary btn-small cala-icon-btn"
+              aria-label={s().status() === 'paused' ? 'Resume' : 'Pause'}
+              title={s().status() === 'paused' ? 'Resume' : 'Pause'}
+              onClick={() => s().togglePause()}
+            >
+              <Icon name={s().status() === 'paused' ? 'play' : 'pause'} size={14} />
+            </button>
+          </Show>
           <button
             type="button"
             class="btn-secondary btn-small cala-icon-btn"
@@ -382,25 +342,6 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             <span class="cala-status" data-testid="pipeline-status">
               {statusText()}
             </span>
-            <Show when={backend()}>
-              {(b) => (
-                <span
-                  class="cala-backend-badge"
-                  classList={{ 'cala-backend-badge--warning': b().key === 'wasm-failed' }}
-                  data-testid="motion-backend"
-                  data-backend={b().key}
-                  title={b().title}
-                >
-                  <Show when={b().key === 'webgpu'}>
-                    <Icon name="gpu" size={12} />
-                  </Show>
-                  <Show when={b().key === 'wasm-failed'}>
-                    <Icon name="warning" size={12} />
-                  </Show>
-                  {b().text}
-                </span>
-              )}
-            </Show>
             <Show when={inspectedText()}>
               {(text) => (
                 <button
@@ -448,7 +389,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               step={step('discover')}
               facts={discoverFacts()}
               seconds={seconds('discover')}
-              body={<DiscoverBody pipeline={s()} cells={c()} step={step('discover')} />}
+              body={
+                <DiscoverBody pipeline={s()} cells={c()} step={step('discover')} fps={props.fps} />
+              }
             />
             <StepBlock
               step={step('settle')}
@@ -491,35 +434,11 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               />
             </Show>
           </div>
-          <div class="cala-run__timeline">
-            <div class="cala-run__window">
-              <span class="cala-run__window-label" id="run-plot-window">
-                Plot window
-              </span>
-              <SegmentedControl
-                options={windowOptions()}
-                value={windowValue()}
-                onChange={setWindow}
-                aria-label="Time window"
-                size="sm"
-                testid="time-window"
-              />
-            </div>
-            <Show when={shown()}>
-              <RunStrip ui={props.ui} />
-            </Show>
-            {/* Expanded, the large History view has the convergence plot; the FOV gets the room. */}
-            <Show when={!props.ui.expanded() && shown()}>
-              <AspectPlot>
-                {(h) => <GroupPlot ui={props.ui} group="convergence" height={h()} compact />}
-              </AspectPlot>
-            </Show>
-          </div>
         </section>
+        <TimeStrip pipeline={s()} cells={c()} ui={props.ui} live={props.live} visible={shown()} />
       </Show>
-      <SpeedControl pipeline={s()} cells={c()} live={props.live} fps={props.fps} />
+      <Compute pipeline={s()} cells={c()} live={props.live} fps={props.fps} workers={!prerun()} />
       <Show when={!prerun()}>
-        <WorkDisplay pipeline={s()} cells={c()} ui={props.ui} live={props.live} visible={shown()} />
         <div class="cala-run__footer">
           <Show when={props.compress}>
             {(compress) => (

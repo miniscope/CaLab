@@ -545,6 +545,8 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
   let lastDropped = 0;
   let gapPending = 0;
   let lastGapT = -Infinity;
+  /** Stream s where the first work reading's interval opened (null: no reading yet, or a saved run). */
+  let workStart: number | null = null;
   const [tick, setTick] = createSignal(0);
   const [runEnd, setRunEnd] = createSignal<number | null>(null);
   /** Bumped when a group gains something to look at (a range step or a warning). */
@@ -565,6 +567,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     lastDropped = 0;
     gapPending = 0;
     lastGapT = -Infinity;
+    workStart = null;
     history = freshStore(o.workers);
     events = new RunEvents();
     history.onRangeStep = (key, e) => {
@@ -609,6 +612,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     lastDropped = 0;
     gapPending = 0;
     lastGapT = -Infinity;
+    workStart = null;
     history = o.bins ? StreamHistory.fromExport(o.bins, allSeries(1)) : freshStore(1);
     // (A saved run keeps the ranges it was exported with; the 1 only fills series an old export lacks.)
     events = new RunEvents();
@@ -732,6 +736,11 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     for (const k of WORK_KINDS) history.push(kindSeriesKey(k), t, byKind[k]);
   }
 
+  /** The work readings' first interval opens now (once per run; later calls are ignored). */
+  function workOpen(): void {
+    workStart ??= processedS;
+  }
+
   /** The speed target now, fps (0 = Max), at the stream time Discover has reached. */
   function target(fpsTarget: number): void {
     history.push('target_fps', processedS, fpsTarget > 0 ? fpsTarget : 0);
@@ -780,6 +789,9 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     liveCounters,
     convergence,
     work,
+    workOpen,
+    /** Stream s where the first work reading's interval opened (null: none yet). */
+    workStart: () => workStart,
     target,
     births,
     speedSetting,

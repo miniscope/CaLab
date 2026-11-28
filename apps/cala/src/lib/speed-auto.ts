@@ -102,6 +102,8 @@ export class AutoPolicy implements TargetPolicy {
   private unpaced = 0;
   /** The Max rate the budget is worked from (null: not measured yet). */
   private maxLock: number | null = null;
+  /** The recording's frames, as of the last look (0: not known). */
+  private totalFrames = 0;
 
   /**
    * @param share the extra time over a Max run, 0.5 to 2.
@@ -117,7 +119,19 @@ export class AutoPolicy implements TargetPolicy {
     return this.cur;
   }
 
+  /**
+   * The time budget and how much of it Discover has used, seconds of the policy's own clock
+   * (`PolicyInput.wallS`, paused time left out). Null until the budget is worked out (the Max
+   * rate measured and the frame count known). Read-only: it never changes a decision.
+   */
+  budgetUse(wallS: number): { usedS: number; budgetS: number } | null {
+    if (!this.start || this.maxLock === null || !(this.totalFrames > 0)) return null;
+    const budgetS = ((1 + this.share) * (this.totalFrames - this.start.frame)) / this.maxLock;
+    return { usedS: Math.max(0, wallS - this.start.wallS), budgetS };
+  }
+
   target(i: PolicyInput): PolicyTarget {
+    this.totalFrames = i.totalFrames;
     const raw = i.maxFps;
     if (raw !== null && raw > 0) {
       if (this.cur === null || this.cur === 0) {

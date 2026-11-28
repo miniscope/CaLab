@@ -1,10 +1,13 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, Show, untrack } from 'solid-js';
 import type { JSX } from 'solid-js';
-import { SegmentedControl } from '@calab/ui';
+import { Icon, MeterRow, SegmentedBar, SegmentedControl } from '@calab/ui';
+import { placeAxisLabels } from '@calab/ui/chart';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { CellStore } from '../lib/cell-store.ts';
-import { curveWords, CURVE_PRESETS, presetCurve } from '../lib/speed-schedule.ts';
+import { curveWords, CURVE_PRESETS, planLine, presetCurve } from '../lib/speed-schedule.ts';
 import { AUTO_BUDGETS, budgetLabel } from '../lib/speed-auto.ts';
+import { RAIL_VISIT_RANGE, VISIT_BAND } from '../lib/rail-view.ts';
+import { createSampled } from '../lib/sampled.ts';
 import {
   VISIT_RATE,
   fmtVisitRate,
@@ -12,6 +15,7 @@ import {
   visitHoldText,
   visitRateText,
 } from '../lib/visit-rate.ts';
+import { planPath, speedPos } from '../lib/work-display.ts';
 import {
   achievedSpeed,
   belowFloorNote,
@@ -39,8 +43,14 @@ import {
 /** Keyboard steps wait this long for the next one before they count as one change (a drag commits on release). */
 const KEY_DEBOUNCE_MS = 400;
 
-/** Two labels closer than this share of the track would overlap: the floor's goes to the left of its mark. */
-const LABEL_CLASH = 0.22;
+/** Live marks (floor, max now, achieved, refinement, Auto's budget) refresh at most this often, ms. */
+const SAMPLE_MS = 500;
+
+/** The track's inset from its row's ends, px (`.cala-speed__track` left and right). */
+const TRACK_INSET_PX = 8;
+
+/** The Curve preview's rows, px: the plot, then the share-of-recording labels. */
+const PREVIEW = { top: 4, bot: 40, axis: 52, height: 56, left: 28, right: 4 } as const;
 
 const NO_BUFFER_REASON =
   "Background settle on a live stream needs the stream's raw frames on disk, which is not built yet.";
@@ -163,6 +173,11 @@ export function SpeedControl(props: {
   const done = () => s().status() === 'done';
   const lookbackOn = () => s().lookback() && s().lookbackBlocked() === null;
   const cap = () => (s().csettle() ? s().csettleCeiling() : 0);
+  /** Frames in the recording (0 when unknown or a stream). */
+  const total = () => {
+    const n = s().plan()?.frameCount ?? 0;
+    return Number.isFinite(n) ? n : 0;
+  };
 
   const achieved = (): number | null =>
     achievedSpeed({
@@ -241,12 +256,93 @@ export function SpeedControl(props: {
     save({ cap: v });
   }
 
-  // The floor's mark label moves left of its mark where it would meet "max now".
-  const clash = () => {
-    const m = maxNow();
-    return m !== null && Math.abs(fpsToPos(m) - fpsToPos(floorFps())) < LABEL_CLASH;
-  };
   const pct = (fps: number) => `${(100 * fpsToPos(fps)).toFixed(2)}%`;
+
+  // ---- live marks, sampled at most twice a second ----
+  const live = createSampled(
+    () => {
+      const visitOn = running() && !done() && s().visitMode() === 'on';
+      const t = visitOn ? (s().visitTarget() ?? VISIT_RATE.target) : null;
+      return {
+        floor: floorFps(),
+        maxNow: maxNow(),
+        achieved: achieved(),
+        visits: {
+          on: visitOn,
+          achieved: visitOn ? s().visitAchieved() : null,
+          target: t,
+          hold: visitOn ? visitHoldText(s().visitHold(), s().paceTarget(), t ?? undefined) : null,
+          holdFps: s().visitHold(),
+          text: visitOn
+            ? visitRateText(
+                s().visitMode(),
+                s().visitSchedule(),
+                s().visitTarget(),
+                s().visitYield(),
+              )
+            : null,
+        },
+        budget: mode() === 'auto' && running() ? s().autoBudgetUse() : null,
+      };
+    },
+    () => `${s().status()}|${mode()}|${pinned() ?? ''}`,
+    SAMPLE_MS,
+  );
+
+  // ---- the track's width, for its labels and the Curve preview ----
+  const [trackW, setTrackW] = createSignal(0);
+  let trackRo: ResizeObserver | undefined;
+  const bindTrack = (el: HTMLDivElement) => {
+    const measure = () => {
+      const w = Math.floor(el.getBoundingClientRect().width);
+      if (w > 0) setTrackW(w);
+    };
+    queueMicrotask(measure);
+    if (typeof ResizeObserver === 'undefined') return;
+    trackRo?.disconnect();
+    trackRo = new ResizeObserver(measure);
+    trackRo.observe(el);
+  };
+  onCleanup(() => trackRo?.disconnect());
+
+  /** The labels over the track (floor, max now), placed so they never overlap. */
+  const topLabels = createMemo(() => {
+    const w = trackW();
+    if (!(w > 0) || props.live) return [];
+    const inner = Math.max(1, w - 2 * TRACK_INSET_PX);
+    const at = (fps: number) => TRACK_INSET_PX + inner * fpsToPos(fps);
+    const v = live();
+    const out = [{ x: at(v.floor), text: `floor ${v.floor}`, priority: 1 }];
+    if (v.maxNow !== null) out.push({ x: at(v.maxNow), text: `max ${v.maxNow}`, priority: 2 });
+    return placeAxisLabels(out, { x0: 0, x1: w, charPx: 6.2, gap: 6 });
+  });
+  const anchorShift = { start: '0', middle: '-50%', end: '-100%' } as const;
+
+  /** The Curve preview: the plan as a step line, share of the recording against fps (log). */
+  const curvePreview = createMemo(() => {
+    if (mode() !== 'curve') return null;
+    const w = trackW();
+    if (!(w > 0)) return null;
+    const armed = running() ? s().armedCurve() : null;
+    const c = armed?.curve ?? s().speedCurve()?.curve;
+    if (!c) return null;
+    const v = live();
+    const plan = planLine(c, { floorFps: v.floor, seeAllFps: s().floor().estimate.seeAllFps });
+    const seg = { x0: PREVIEW.left, x1: w - PREVIEW.right };
+    const y = (fps: number) => PREVIEW.bot - (PREVIEW.bot - PREVIEW.top) * speedPos(fps);
+    return {
+      w,
+      d: planPath(plan, seg, PREVIEW.top, PREVIEW.bot),
+      floorY: v.floor > 0 ? y(v.floor) : null,
+      grid: [30, 100, 300].map((f) => ({ f, y: y(f) })),
+      seg,
+      // Where Discover is now, as a share of the recording.
+      nowX:
+        running() && total() > 0
+          ? seg.x0 + (seg.x1 - seg.x0) * Math.min(1, untrack(s().processed) / total())
+          : null,
+    };
+  });
 
   const cappedReason = (): string | null =>
     props.live
@@ -292,14 +388,6 @@ export function SpeedControl(props: {
             ? `Following the curve: ${curveLine()}. ${speedLine()}`
             : speedLine();
   const belowNote = () => (mode() === 'fixed' ? belowFloorNote(shown() ?? 0, floorFps()) : null);
-  // The Discover visit rate's hold (`lib/visit-rate.ts`): the run goes slower than asked.
-  const holdLine = () =>
-    running() && !done() ? visitHoldText(s().visitHold(), s().paceTarget(), visitTarget()) : null;
-  // The rate in force (Auto moves it with the new cells visits find), while Discover runs.
-  const rateLine = () =>
-    running() && !done() && s().visitMode() === 'on'
-      ? visitRateText(s().visitMode(), s().visitSchedule(), s().visitTarget(), s().visitYield())
-      : null;
 
   // Only at Max (mode 'max'; a curve or Auto run has its own target).
   const repeatLine = () => (mode() === 'max' ? maxRepeatText(target()) : null);
@@ -399,175 +487,288 @@ export function SpeedControl(props: {
             </p>
           )}
         </Show>
-        <Show when={rateLine()}>
-          {(line) => (
-            <p
-              class="cala-speed__line"
-              data-testid="speed-visit-rate"
-              title={
-                s().visitSchedule() === 'auto'
-                  ? `Discover's refinement visits per frame (Auto): ${VISIT_RATE.target} while visits keep finding new cells, sliding down to ${fmtVisitRate(VISIT_RATE.autoFloor)} as new cells stop turning up, and back up when they appear again. It follows what the visits find, never how fast this machine is, so the same recording gets the same visits on any machine.`
-                  : `Discover keeps cell refinement at ${VISIT_RATE.target} visits per frame (fixed), so results do not depend on how fast this machine is.`
-              }
-            >
-              {line()}
-            </p>
-          )}
-        </Show>
-        <Show when={holdLine()}>
-          {(line) => (
-            <p
-              class="cala-speed__line"
-              data-testid="speed-visit-hold"
-              title={`Discover keeps cell refinement between 2/3 and 4/3 of its target (now ${fmtVisitRate(visitTarget())} visits per frame), so results do not depend on how fast this machine is. When the workers cannot keep up with the target, the run is held slower than the Speed setting.`}
-            >
-              {line()}
-            </p>
-          )}
-        </Show>
       </Show>
 
-      <div
-        class="cala-speed__trackrow"
-        classList={{
-          'cala-speed__trackrow--off': props.live || done(),
-          'cala-speed__trackrow--curve': mode() === 'curve' || mode() === 'auto',
-        }}
-      >
-        <div class="cala-speed__trackwrap" aria-hidden={props.live ? 'true' : undefined}>
-          <div class="cala-speed__track">
-            <Show when={!props.live}>
-              <div
-                class="cala-speed__nogain"
-                data-testid="speed-nogain"
-                style={{ width: pct(floorFps()) }}
-                title="No gain here: every kind of work is already fully served, so going slower only adds idle time."
-              />
-              <Show when={maxNow()}>
-                {(m) => (
-                  <div
-                    class="cala-speed__above"
-                    style={{ left: pct(m()) }}
-                    title={`Above what this machine reaches now: a target here behaves as Max. ${maxTitle()}`}
-                  />
-                )}
-              </Show>
-              <Show when={achieved()}>
-                {(a) => <div class="cala-speed__achieved" style={{ width: pct(a()) }} />}
-              </Show>
-            </Show>
-            <For each={SPEED_TICKS}>
-              {(t) => (
-                <>
-                  <i class="cala-speed__tick" style={{ left: pct(t) }} />
-                  <span class="cala-speed__ticklabel" style={{ left: pct(t) }}>
-                    {t}
-                  </span>
-                </>
+      <Show when={props.live || mode() === 'max' || mode() === 'fixed'}>
+        <div
+          class="cala-speed__trackrow"
+          classList={{ 'cala-speed__trackrow--off': props.live || done() }}
+        >
+          <div
+            class="cala-speed__trackwrap"
+            ref={bindTrack}
+            aria-hidden={props.live ? 'true' : undefined}
+          >
+            <For each={topLabels()}>
+              {(l) => (
+                <span
+                  class="cala-speed__marklabel"
+                  style={{ left: `${l.x}px`, transform: `translateX(${anchorShift[l.anchor]})` }}
+                  data-testid={l.text.startsWith('floor') ? 'speed-floor-label' : 'speed-max-label'}
+                  title={l.text.startsWith('floor') ? words().detail : maxTitle()}
+                >
+                  {l.text}
+                </span>
               )}
             </For>
-            <Show when={!props.live}>
-              <i class="cala-speed__mark" style={{ left: pct(floorFps()) }} />
-              <span
-                class="cala-speed__marklabel"
-                classList={{ 'cala-speed__marklabel--left': clash() }}
-                style={{ left: pct(floorFps()) }}
-                data-testid="speed-floor-label"
-                title={words().line}
-              >
-                {words().mark}
-              </span>
-              <Show when={maxNow()}>
-                {(m) => (
-                  <>
-                    <i class="cala-speed__mark" style={{ left: pct(m()) }} />
-                    <span
-                      class="cala-speed__marklabel"
+            <div class="cala-speed__track">
+              <Show when={!props.live}>
+                <div
+                  class="cala-speed__nogain"
+                  data-testid="speed-nogain"
+                  style={{ width: pct(live().floor) }}
+                  title="No gain here: every kind of work is already fully served, so going slower only adds idle time."
+                />
+                <Show when={live().maxNow}>
+                  {(m) => (
+                    <div
+                      class="cala-speed__above"
                       style={{ left: pct(m()) }}
-                      data-testid="speed-max-label"
-                      title={maxTitle()}
-                    >
-                      max now {m()}
+                      title={`Above what this machine reaches now: a target here behaves as Max. ${maxTitle()}`}
+                    />
+                  )}
+                </Show>
+                <Show when={live().achieved}>
+                  {(a) => <div class="cala-speed__achieved" style={{ width: pct(a()) }} />}
+                </Show>
+              </Show>
+              <For each={SPEED_TICKS}>
+                {(t) => (
+                  <>
+                    <i class="cala-speed__tick" style={{ left: pct(t) }} />
+                    <span class="cala-speed__ticklabel num" style={{ left: pct(t) }}>
+                      {t}
                     </span>
                   </>
                 )}
+              </For>
+              <Show when={!props.live}>
+                <i class="cala-speed__mark" style={{ left: pct(live().floor) }} />
+                <Show when={live().maxNow}>
+                  {(m) => <i class="cala-speed__mark" style={{ left: pct(m()) }} />}
+                </Show>
               </Show>
-              <span
-                class="cala-speed__nogain-label"
-                data-testid="speed-nogain-label"
-                style={{ 'max-width': `calc(${pct(floorFps())} - 34px)` }}
-              >
-                no gain here
-              </span>
-            </Show>
-            <Show when={props.live && props.fps >= SPEED_SCALE.lo}>
-              <i
-                class="cala-speed__mark cala-speed__mark--stream"
-                style={{ left: pct(props.fps) }}
+              <Show when={props.live && props.fps >= SPEED_SCALE.lo}>
+                <i
+                  class="cala-speed__mark cala-speed__mark--stream"
+                  style={{ left: pct(props.fps) }}
+                />
+                <span
+                  class="cala-speed__marklabel cala-speed__marklabel--stream"
+                  style={{ left: pct(props.fps) }}
+                  data-testid="speed-stream-label"
+                >
+                  stream {Math.round(props.fps)}
+                </span>
+              </Show>
+            </div>
+            <Show when={!props.live}>
+              <input
+                type="range"
+                class="cala-speed__range"
+                classList={{ 'cala-speed__range--max': mode() === 'max' }}
+                data-testid="speed-slider"
+                min={fpsToStep(SPEED_SCALE.lo)}
+                max={TRACK_STEPS}
+                step={1}
+                value={fpsToStep(shown() ?? fixedFps())}
+                disabled={pinned() !== null || done()}
+                aria-label="Target speed, frames per second"
+                aria-valuetext={
+                  mode() === 'max'
+                    ? 'Max'
+                    : `${shown()} frames per second${(shown() as number) < floorFps() ? ', no gain here' : ''}`
+                }
+                onInput={onSlide}
+                onKeyDown={onKey}
+                onChange={commitDraft}
+                onPointerDown={(e) => {
+                  dragging = true;
+                  // Keeps the release coming here even when it happens outside the element.
+                  try {
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                  } catch {
+                    // No capture (a synthetic event): the change and blur commits still run.
+                  }
+                }}
+                onPointerUp={commitDraft}
+                onPointerCancel={commitDraft}
+                onLostPointerCapture={commitDraft}
+                onBlur={commitDraft}
               />
-              <span
-                class="cala-speed__marklabel cala-speed__marklabel--stream"
-                style={{ left: pct(props.fps) }}
-                data-testid="speed-stream-label"
-              >
-                stream {Math.round(props.fps)}
-              </span>
             </Show>
           </div>
-          <Show when={!props.live && (mode() === 'max' || mode() === 'fixed')}>
-            <input
-              type="range"
-              class="cala-speed__range"
-              classList={{ 'cala-speed__range--max': mode() === 'max' }}
-              data-testid="speed-slider"
-              min={fpsToStep(SPEED_SCALE.lo)}
-              max={TRACK_STEPS}
-              step={1}
-              value={fpsToStep(shown() ?? fixedFps())}
-              disabled={pinned() !== null || done()}
-              aria-label="Target speed, frames per second"
-              aria-valuetext={
-                mode() === 'max'
-                  ? 'Max'
-                  : `${shown()} frames per second${(shown() as number) < floorFps() ? ', no gain here' : ''}`
-              }
-              onInput={onSlide}
-              onKeyDown={onKey}
-              onChange={commitDraft}
-              onPointerDown={(e) => {
-                dragging = true;
-                // Keeps the release coming here even when it happens outside the element.
-                try {
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                } catch {
-                  // No capture (a synthetic event): the change and blur commits still run.
-                }
-              }}
-              onPointerUp={commitDraft}
-              onPointerCancel={commitDraft}
-              onLostPointerCapture={commitDraft}
-              onBlur={commitDraft}
-            />
-          </Show>
-          <Show when={!props.live && (mode() === 'curve' || mode() === 'auto')}>
-            <span class="cala-muted" data-testid="speed-set-by">
-              {mode() === 'auto' ? 'set by Auto' : 'set by the curve'}
-            </span>
+          {/* The Max stop: at Max the thumb sits here, so the target is always visible. */}
+          <button
+            type="button"
+            class="cala-speed__maxstop"
+            classList={{ 'cala-speed__maxstop--on': mode() === 'max' && !props.live }}
+            data-testid="speed-max"
+            aria-pressed={mode() === 'max'}
+            disabled={props.live === true || done()}
+            title={MODE_TITLES.max}
+            onClick={() => setMode('max')}
+          >
+            <Show when={mode() === 'max' && !props.live}>
+              <span class="cala-speed__thumb" data-testid="speed-max-thumb" aria-hidden="true" />
+            </Show>
+            Max
+          </button>
+        </div>
+      </Show>
+
+      {/* Curve: the plan along the recording in place of the thumb. */}
+      <Show when={!props.live && mode() === 'curve'}>
+        <div class="cala-speed__preview" ref={bindTrack} data-testid="speed-curve-preview">
+          <Show when={curvePreview()}>
+            {(cp) => (
+              <svg
+                width={cp().w}
+                height={PREVIEW.height}
+                viewBox={`0 0 ${cp().w} ${PREVIEW.height}`}
+                role="img"
+                aria-label={`The curve's target over the recording: ${curveLine()}`}
+              >
+                <rect
+                  class="cala-speed__preview-ground"
+                  x={cp().seg.x0}
+                  y={PREVIEW.top}
+                  width={cp().seg.x1 - cp().seg.x0}
+                  height={PREVIEW.bot - PREVIEW.top}
+                />
+                <For each={cp().grid}>
+                  {(g) => (
+                    <>
+                      <line
+                        class="cala-speed__preview-grid"
+                        x1={cp().seg.x0}
+                        x2={cp().seg.x1}
+                        y1={g.y}
+                        y2={g.y}
+                      />
+                      <text x={cp().seg.x0 - 4} y={g.y + 3} text-anchor="end">
+                        {g.f}
+                      </text>
+                    </>
+                  )}
+                </For>
+                <Show when={cp().floorY}>
+                  {(y) => (
+                    <line
+                      class="cala-speed__preview-floor"
+                      x1={cp().seg.x0}
+                      x2={cp().seg.x1}
+                      y1={y()}
+                      y2={y()}
+                    />
+                  )}
+                </Show>
+                <path class="cala-speed__preview-plan" d={cp().d} />
+                <Show when={cp().nowX}>
+                  {(x) => (
+                    <line
+                      class="cala-speed__preview-now"
+                      x1={x()}
+                      x2={x()}
+                      y1={PREVIEW.top}
+                      y2={PREVIEW.bot}
+                    />
+                  )}
+                </Show>
+                <text x={cp().seg.x0} y={PREVIEW.axis} text-anchor="start">
+                  0 %
+                </text>
+                <text x={(cp().seg.x0 + cp().seg.x1) / 2} y={PREVIEW.axis} text-anchor="middle">
+                  of the recording, fps log 10–500 (dotted: floor)
+                </text>
+                <text x={cp().seg.x1} y={PREVIEW.axis} text-anchor="end">
+                  100 %
+                </text>
+              </svg>
+            )}
           </Show>
         </div>
-        <button
-          type="button"
-          class="cala-speed__maxstop"
-          classList={{ 'cala-speed__maxstop--on': mode() === 'max' && !props.live }}
-          data-testid="speed-max"
-          aria-pressed={mode() === 'max'}
-          disabled={props.live === true || done() || mode() === 'curve' || mode() === 'auto'}
-          title={MODE_TITLES.max}
-          onClick={() => setMode('max')}
-        >
-          Max
-        </button>
-      </div>
+      </Show>
+
+      {/* Auto: the time budget, before a run as a plan, during one as the share used. */}
+      <Show when={!props.live && mode() === 'auto'}>
+        <div class="cala-speed__budget" data-testid="speed-auto-budget">
+          <Show
+            when={live().budget}
+            fallback={
+              <div class="cala-speed__budget-plan">
+                <SegmentedBar
+                  parts={[
+                    { id: 'max', label: 'A Max run', value: 1, color: 'var(--stage-discover)' },
+                    {
+                      id: 'extra',
+                      label: `Extra time ${budgetLabel(budget())}`,
+                      value: budget(),
+                      color: 'var(--stage-discover-tint)',
+                    },
+                  ]}
+                  total={1 + budget()}
+                  format={(v) => `${v.toFixed(1)}× a Max run's time`}
+                  label="Auto time budget"
+                />
+                <span class="cala-speed__budget-note">
+                  Discover may take up to {1 + budget()}× a Max run's time
+                </span>
+              </div>
+            }
+          >
+            {(b) => (
+              <MeterRow
+                label="Budget used"
+                value={b().usedS}
+                min={0}
+                max={Math.max(1, b().budgetS)}
+                tone={b().usedS > b().budgetS ? 'warning' : 'discover'}
+                size="sm"
+                display={`${Math.round(b().usedS)} / ${Math.round(b().budgetS)}`}
+                unit="s"
+                format={(v) =>
+                  `${Math.round(v)} of ${Math.round(b().budgetS)} s of Discover's budget used`
+                }
+              />
+            )}
+          </Show>
+        </div>
+      </Show>
+
+      {/* Refinement visits per Discover frame, on the rail's range and band. */}
+      <Show when={!props.live && live().visits.on}>
+        <div class="cala-speed__refine" title={live().visits.text ?? undefined}>
+          <MeterRow
+            label="Refinement"
+            value={live().visits.achieved}
+            min={RAIL_VISIT_RANGE.min}
+            max={RAIL_VISIT_RANGE.max}
+            target={live().visits.target ?? undefined}
+            band={
+              live().visits.target !== null
+                ? [live().visits.target! * VISIT_BAND[0], live().visits.target! * VISIT_BAND[1]]
+                : undefined
+            }
+            tone={live().visits.hold ? 'warning' : 'discover'}
+            size="sm"
+            display={
+              live().visits.achieved !== null ? live().visits.achieved!.toFixed(2) : undefined
+            }
+            unit="/frame"
+            format={(v) => `${v.toFixed(2)} visits per frame`}
+            testid="speed-visit-rate"
+          />
+          <Show when={live().visits.hold}>
+            {(why) => (
+              <p class="cala-speed__hold" data-testid="speed-visit-hold" title={why()}>
+                <Icon name="warning" size={12} />
+                Held at {Math.round(live().visits.holdFps ?? 0)} fps to keep refinement up
+              </p>
+            )}
+          </Show>
+        </div>
+      </Show>
 
       <Show when={!props.live}>
         <Show when={belowNote()}>

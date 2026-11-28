@@ -415,15 +415,18 @@ export class WorkRater {
 
   constructor(private readonly everyMs = 1000) {}
 
-  /** The rates since the reference snapshot, or null while it is too young (or the run changed). */
-  push(w: WorkStatus): WorkRates | null {
+  /**
+   * The rates since the reference snapshot, or null while it is younger than `minMs` (default:
+   * the rater's period) or the run changed. A shorter `minMs` closes a last, partial interval.
+   */
+  push(w: WorkStatus, minMs = this.everyMs): WorkRates | null {
     const ref = this.ref;
     if (!ref || w.wallMs < ref.wallMs) {
       this.carry.clear();
       this.ref = w;
       return null;
     }
-    if (w.wallMs - ref.wallMs < this.everyMs) return null;
+    if (w.wallMs - ref.wallMs < minMs || w.wallMs === ref.wallMs) return null;
     this.ref = w;
     this.settleWorkers = w.settleWorkers;
     const r = workRates(ref, w);

@@ -4,7 +4,6 @@ import {
   busyWorkers,
   displayState,
   formatDuration,
-  frameTicks,
   squareStack,
   gridGroups,
   groupedRows,
@@ -15,11 +14,11 @@ import {
   rowAriaLabel,
   rowBusy,
   rowLabel,
-  segX,
   settledSummary,
   speedPos,
   settlednessFromHints,
   stackBands,
+  stepPoints,
   stoppedLookbackRows,
   BG_SETTLE_GROUND,
   BG_SETTLE_HATCH,
@@ -230,19 +229,6 @@ describe('strip layout', () => {
     // The segment does not move while Discover runs: same layout for any frame count.
     expect(stripLayout(526, 34, 6, true, 8)).toEqual(l);
   });
-  it('segX is clamped to its segment', () => {
-    const seg = { x0: 10, x1: 110 };
-    expect(segX(seg, 0, 50)).toBe(10);
-    expect(segX(seg, 25, 50)).toBe(60);
-    expect(segX(seg, 99, 50)).toBe(110);
-    expect(segX(seg, 5, 0)).toBe(10);
-  });
-  it('frame ticks are round and bounded', () => {
-    expect(frameTicks(17879, 5)).toEqual([0, 5000, 10000, 15000]);
-    expect(frameTicks(17879, 3)).toEqual([0, 10000]);
-    expect(frameTicks(0, 5)).toEqual([0]);
-    expect(frameTicks(7, 5).length).toBeLessThanOrEqual(5);
-  });
 });
 
 describe('stack bands', () => {
@@ -268,6 +254,29 @@ describe('stack bands', () => {
     const b = stackBands(pts, 10, 0, 100);
     expect(bandPath(b[4])).toBe('');
     expect(bandPath(b[0])).toMatch(/^M0\.0,90\.0 L10\.0,90\.0 L10\.0,100\.0 L0\.0,100\.0 Z$/);
+  });
+});
+
+describe('work readings as steps', () => {
+  const p = (x: number, live: number) => ({ x, values: vals({ live }) });
+  it('draws each reading flat back to the one before it', () => {
+    const out = stepPoints([p(0, 1), p(10, 3), p(30, 2)]);
+    expect(out.map((q) => [q.x, q.values.live])).toEqual([
+      [0, 1],
+      [0, 3],
+      [10, 3],
+      [10, 2],
+      [30, 2],
+    ]);
+  });
+  it('keeps a single reading and an empty list as they are', () => {
+    expect(stepPoints([p(5, 1)]).map((q) => q.x)).toEqual([5]);
+    expect(stepPoints([])).toEqual([]);
+  });
+  it('the stacked band of steps has a vertical edge at each reading', () => {
+    const [live] = stackBands(stepPoints([p(0, 1), p(10, 3)]), 10, 0, 100);
+    expect(live.x).toEqual([0, 0, 10]);
+    expect(live.top).toEqual([90, 70, 70]);
   });
 });
 
