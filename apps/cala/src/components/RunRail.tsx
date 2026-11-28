@@ -104,7 +104,6 @@ export function RunRail(props: RunRailProps): JSX.Element {
     cells: c(),
     pass2: p(),
     live: props.live,
-    sessionRun: props.sessions != null,
   }));
 
   const phase = () =>

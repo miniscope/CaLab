@@ -842,6 +842,12 @@ describe('settings layers', () => {
     expect(await runCopies.list(key)).toHaveLength(1);
     await p2.onProgress!({ run: runDoc(p2, r2, 'finished'), folder: r2.folder, sink: r2.sink });
     expect(await runCopies.list(key)).toEqual([]);
+    // The ended run is in no folder this page can read, yet a refresh (Back to project) keeps it.
+    await b.store.refresh();
+    expect(b.store.index()!.runs.map((r) => [r.id, r.status])).toEqual([[r2.id, 'finished']]);
+    // Opening the project again starts from what the folder holds.
+    await b.open();
+    expect(b.store.index()!.runs).toEqual([]);
   });
 });
 

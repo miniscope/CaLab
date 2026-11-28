@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   buildRunRecord,
+  EXTRACT_SKIPPED_STAGE,
   achievedFps,
   browserInfo,
   gatherRunRecord,
@@ -1034,5 +1035,23 @@ describe('run record: the Discover visit rate', () => {
     expect(urlFlags('?debug&visitrate=auto').flags.visitrate.in_effect).toBe(true);
     expect(urlFlags('?visitrate=auto').flags.visitrate.in_effect).toBe(false);
     expect(urlFlags('?debug&visitrate=fixed').flags.visitrate.in_effect).toBe(false);
+  });
+});
+
+describe('a Discover-only run', () => {
+  it('lists Extract as skipped after the stages that ran', () => {
+    const r = buildRunRecord(input({ extractSkipped: true })) as Rec;
+    expect(r.stages.at(-1)).toEqual({
+      stage: 'extract',
+      outcome: 'skipped',
+      started_at: null,
+      ended_at: null,
+      reason: 'Discover only: stages.extract is off',
+    });
+    expect(r.stages.filter((x: Rec) => x.stage === 'extract')).toHaveLength(1);
+    // A run that Extracts writes no such row.
+    const full = buildRunRecord(input()) as Rec;
+    expect(full.stages.some((x: Rec) => x.outcome === 'skipped')).toBe(false);
+    expect(EXTRACT_SKIPPED_STAGE.outcome).toBe('skipped');
   });
 });

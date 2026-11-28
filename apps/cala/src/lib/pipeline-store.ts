@@ -620,6 +620,8 @@ export function createPipelineStore(
         flatField: useFlat,
         finalSettleLevel: runLevel,
         findNewCells: discover(),
+        // A live stream's Extract is decided by its source (none, or on its factors).
+        extract: live ? true : untrack(extractAfterDiscover),
         qc,
         repeatable: rep,
         ...(isBackgroundCap(settleCap()) ? { settleCap: settleCap() as BackgroundCap } : {}),
@@ -1010,6 +1012,11 @@ export function createPipelineStore(
     plan,
     /** The current run's resolved params (null before its pipeline is ready). */
     runParams,
+    /**
+     * Whether the current run Extracts after Discover (`stages.extract` of its resolved params);
+     * before a run's params are resolved, the setting for the next start.
+     */
+    extractRun: (): boolean => runParams()?.params.stages?.extract ?? extractAfterDiscover(),
     setup,
     processed,
     previews,

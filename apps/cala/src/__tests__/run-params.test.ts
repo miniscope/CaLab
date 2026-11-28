@@ -3,6 +3,7 @@
  * The run's params from the app's settings to the engine: the layer the pipeline store builds,
  * the frame worker's resolution, the worker init messages, and the WASM objects built from them.
  */
+import { setExtractAfterDiscover } from '../lib/run-stages.ts';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -104,8 +105,32 @@ describe('the params layer of a Discover start', () => {
       discover: { visit: { mode: 'fixed' } },
       flat_field: { enabled: true },
       settle: { final: { level: 'thorough' } },
-      stages: { extract: true },
     });
+  });
+
+  it('carries Extract after Discover as set: off makes a Discover-only run', () => {
+    const l = (extract?: boolean) =>
+      runParamsLayer({
+        lookback: true,
+        factorSettle: false,
+        visitMode: 'fixed',
+        flatField: true,
+        ...(extract !== undefined ? { extract } : {}),
+      }).stages;
+    expect(l(false)).toEqual({ extract: false });
+    expect(l(true)).toEqual({ extract: true });
+    expect(l()).toBeUndefined();
+    // The setting wins over a layer under it, as every setting does.
+    expect(
+      runParamsLayer({
+        lookback: true,
+        factorSettle: false,
+        visitMode: 'fixed',
+        flatField: true,
+        extract: true,
+        base: { stages: { extract: false } },
+      }).stages,
+    ).toEqual({ extract: true });
   });
 
   it('look-back off drops the cluster replay and the merge guard it runs with', () => {
@@ -317,14 +342,15 @@ function nonDefault(f: ParamField): unknown {
 
 describe('every field the pre-run sheet renders reaches the run', () => {
   it('a value set in the sheet is in the params the run resolves', async () => {
-    // Extract after Discover is shown (on, held) but set at each start: every run Extracts.
+    // Extract after Discover (`/stages/extract`) is among them: off, the run is Discover only.
     const fields = schemaFields(PARAMS_SCHEMA).filter(
       (f) =>
         (f.level === 'main' || f.level === 'advanced') &&
         sheetShows(f, true) &&
         !SET_AT_START[f.pointer],
     );
-    expect(fields).toHaveLength(30);
+    expect(fields).toHaveLength(31);
+    expect(fields.some((f) => f.pointer === '/stages/extract')).toBe(true);
     for (const f of fields) {
       // A µm diameter needs the optics; 30 µm at 2 µm per pixel is 15 px.
       const v = f.pointer === '/scales/expected_cell_diameter_um' ? 30 : nonDefault(f);
@@ -342,6 +368,8 @@ describe('every field the pre-run sheet renders reaches the run', () => {
       if (f.pointer === '/scales/expected_cell_diameter_um')
         expect(run.engine.cell_diameter).toEqual({ px: 15, source: 'optics', um_per_px: 2 });
     }
+    // The bound setting is module state: back to its default for the tests after this one.
+    setExtractAfterDiscover(true);
   });
 });
 

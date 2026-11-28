@@ -183,6 +183,67 @@ test('Cala: one recording is a one-session project; Run writes its run into cala
   rmSync(base, { recursive: true, force: true });
 });
 
+test('Cala: Discover only (Extract after Discover off) writes the footprints and skips Extract', async ({
+  page,
+}) => {
+  test.setTimeout(400_000);
+  const base = mkdtempSync(join(tmpdir(), 'cala-discover-only-e2e-'));
+  const folder = join(base, 'My_V4_Miniscope');
+  mkdirSync(folder);
+  const movie = cellMovie(96, 96, FRAMES);
+  writeFileSync(
+    join(folder, '0.avi'),
+    buildAvi({ width: 96, height: 96, frames: FRAMES, payload: (f) => movie.payload(f) }),
+  );
+  writeFileSync(join(folder, 'metaData.json'), `{"frameRate":"20FPS","framesPerFile":${FRAMES}}`);
+  await noFileSystemAccess(page);
+  const downloads: Download[] = [];
+  page.on('download', (d) => downloads.push(d));
+
+  await page.goto('Cala/');
+  await page.getByTestId('folder-input').setInputFiles(folder);
+  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
+  const extractBox = page.getByTestId('extract-after-discover');
+  await expect(extractBox).toBeChecked();
+  await expect(extractBox).toBeEnabled();
+  await extractBox.uncheck();
+  await expect(page.getByTestId('discover-only-note')).toBeVisible();
+  await page.getByTestId('run-start').click();
+  await expect.poll(() => downloads.length, { timeout: 360_000, intervals: [2000] }).toBe(1);
+  // Extract is off on the rail, never waiting or stopped, and never ran.
+  await expect(page.getByTestId('run-step-extract')).toHaveAttribute('data-state', 'off');
+  await expect(page.getByTestId('settings-chip-extract')).toHaveText('Discover only');
+  await expect(page.getByTestId('pass2-run')).toHaveCount(0);
+  const out = join(base, 'unzipped');
+  extract(unzip(readFileSync((await downloads[0].path())!)), out);
+  const tree = join(out, 'calab-project');
+  const index = json(join(tree, 'calab-index.json'));
+  const { folder: runFolder } = index.runs[0] as { folder: string };
+  const run = json(join(tree, runFolder, 'calab-run.json'));
+  expect(run.run.status).toBe('finished');
+  expect(run.config.resolved.stages.extract).toBe(false);
+  expect(run.config.requested.stages.extract).toBe(false);
+  expect(run.config.sources['/stages/extract']).toBe('ui');
+  expect(run.record.settings.extract_after_discover).toBe(false);
+  expect(run.stages.map((x: { stage: string; outcome: string }) => [x.stage, x.outcome])).toEqual([
+    ['discover', 'done'],
+    ['extract', 'skipped'],
+  ]);
+  expect(run.results).toMatchObject([{ stream: '.', status: 'written', path: 'cala-export.npz' }]);
+  expect(run.results[0].cells).toBeGreaterThan(0);
+  const meta = JSON.parse(metaText(readFileSync(join(tree, runFolder, 'cala-export.npz'))));
+  expect(meta.notes.join(' ')).toContain('Discover only');
+  expect(meta.traces_signed).toBeUndefined();
+  expect(meta.cells).toBe(run.results[0].cells);
+  expect(meta.frames).toBe(FRAMES);
+  // The project table (rebuilt on the way back; the run is in a zip, not the folder) says
+  // Extract was skipped.
+  await page.getByTestId('back-to-project').click();
+  await expect(page.getByTestId('cell-discover')).toHaveText('done');
+  await expect(page.getByTestId('cell-extract')).toHaveText('skipped (Discover only)');
+  rmSync(base, { recursive: true, force: true });
+});
+
 async function selectRow(page: Page, i: number): Promise<void> {
   await page.getByTestId('project-row').nth(i).getByTestId('row-select').check();
 }

@@ -133,11 +133,16 @@ observes pooled answers in arrival order.
   disk (one session, or a Joint run of several).
   Where they cannot run (a live stream) the panel says why, and
   the footprints get no refinement after Discover.
-- **Extract after Discover** (on by default for recordings) starts Extract
-  when Discover finishes (its Final settle included). Turn it off to inspect
-  the footprints first; the panel then shows the Extract button with the hint
-  "Extract to solve the final traces with the settled footprints."
-  The option is not saved between sessions.
+- **Extract after Discover** (`stages.extract`, on by default for recordings)
+  starts Extract when Discover finishes (its Final settle included). Off, the
+  run is **Discover only**: it writes the footprints with the traces Discover
+  solved as it read (as a live stream does, `live-export.ts`) and no Extract,
+  for when only the footprints are wanted. It is a params field, so config
+  files, the project's defaults and a session's own values carry it, and the
+  run file records it (`config.resolved.stages.extract: false`, a stage row
+  `{"stage": "extract", "outcome": "skipped"}`, `record.settings.extract_after_discover:
+false`); the export says so in `meta_json.notes`. A stream's Extract is
+  decided by its source and ignores the field.
 - A new Discover run (Restart) starts the stage log over.
 - **A live stream settles and extracts on its factors.** A live source has no
   file to replay, so the stream's Discover frames are compressed into factors
@@ -237,7 +242,8 @@ compose with the sessions. It is the kind of a plan step, chosen in the project 
   `LibrarySource` `file` variant below); `LibraryMode` has the slot.
 - Every run is the run of a plan step and is automatic. After Discover (and its
   Final settle) it runs Extract, then writes the results into its run folder
-  ([projects.md](projects.md)). In Separate mode it then opens the next session.
+  ([projects.md](projects.md)); a Discover-only run (Extract after Discover
+  off) writes Discover's traces instead and never Extracts. In Separate mode it then opens the next session.
   A failed or cancelled stage stops the automatic run. A session where Discover
   finds no cells is skipped and marked so in the run file.
 - A single recording is a project of one session: its run is a Separate step

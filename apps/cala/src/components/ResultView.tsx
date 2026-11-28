@@ -81,6 +81,12 @@ export function resultFovSource(r: LoadedResult): FovSource {
   };
 }
 
+/** The export's `meta_json.notes` (e.g. a Discover-only run's), as lines. */
+export function resultNotes(meta: Record<string, unknown>): string[] {
+  const n = meta.notes;
+  return Array.isArray(n) ? n.filter((x): x is string => typeof x === 'string') : [];
+}
+
 /** A stage run as one line: `Refine 2: done, 2,000 frames, 41 cells`. */
 export function stageLine(r: StageRun): string {
   // A `refine` run only exists in a result saved before Refine was removed.
@@ -292,6 +298,13 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
         Read-only: this is the result as it was saved. Start a new run from the project to Discover,
         Extract again.
       </p>
+      <For each={resultNotes(result.meta)}>
+        {(n) => (
+          <p class="cala-muted" data-testid="result-note">
+            {n}
+          </p>
+        )}
+      </For>
       <Show when={result.boundary}>
         {(f) => (
           <p class="cala-result__boundary" data-testid="result-boundary">

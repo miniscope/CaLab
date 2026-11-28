@@ -18,7 +18,9 @@ import {
 } from '../lib/config-file.ts';
 import { createParamLayers, diameterPlan, runLayer, umPerPx } from '../lib/param-layers.ts';
 import { resolveRunParams } from '../lib/params-handle.ts';
-import { runParams, type ParamsLayer } from '../lib/run-params.ts';
+import { runParams, runParamsLayer, type ParamsLayer } from '../lib/run-params.ts';
+import { extractAfterDiscover, setExtractAfterDiscover } from '../lib/run-stages.ts';
+import { SET_AT_START } from '../lib/sheet-fields.ts';
 import { initTestWasm } from './wasm-test.ts';
 import { writeNpy, zipFiles } from '@calab/io';
 
@@ -400,5 +402,51 @@ describe('a config from a past run', () => {
     expect(isRefusal(notZip) && notZip.message).toContain('not a cala export');
     const json = await readConfigFile(new File([JSON.stringify(run)], 'calab-run.json'));
     expect(isRefusal(json)).toBe(false);
+  });
+});
+
+describe('Extract after Discover (a Discover-only run)', () => {
+  it('round-trips through a config file and reaches the resolved params as set', () => {
+    createRoot((dispose) => {
+      const binding = {
+        '/stages/extract': {
+          get: () => extractAfterDiscover(),
+          set: (v: unknown) => setExtractAfterDiscover(v === true),
+        },
+      };
+      const p = createParamLayers(binding);
+      expect(p.value('/stages/extract')).toBe(true);
+      p.set('/stages/extract', false);
+      expect(extractAfterDiscover()).toBe(false);
+      const text = p.saveText();
+      expect(JSON.parse(text).params).toEqual({ stages: { extract: false } });
+      // Back to the default, then the saved file loads the choice back.
+      p.clear();
+      expect(extractAfterDiscover()).toBe(true);
+      const again = createParamLayers(binding);
+      again.load(loaded(text, 'footprints-only.json'));
+      expect(extractAfterDiscover()).toBe(false);
+      expect(again.source('/stages/extract')).toBe('file:footprints-only.json');
+      // A start sends the setting; nothing overrides it and the engine resolves it.
+      const layer = runParamsLayer({
+        lookback: true,
+        factorSettle: false,
+        visitMode: 'fixed',
+        flatField: true,
+        extract: extractAfterDiscover(),
+        base: again.runLayer(),
+      });
+      expect(again.overridden(layer)).toEqual({});
+      expect(SET_AT_START['/stages/extract']).toBeUndefined();
+      expect(engineOf(layer).params.stages.extract).toBe(false);
+      // A project default of off is followed the same way.
+      again.clear();
+      again.setBase([{ tag: 'project', layer: { stages: { extract: false } } }]);
+      expect(extractAfterDiscover()).toBe(false);
+      expect(again.source('/stages/extract')).toBe('project');
+      again.setBase([]);
+      expect(extractAfterDiscover()).toBe(true);
+      dispose();
+    });
   });
 });

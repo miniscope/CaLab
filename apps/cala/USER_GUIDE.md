@@ -184,7 +184,9 @@ are grouped:
   magnification; until they are set, Run stays off and the field says why.
 - **Look-back**, **Final settle** (Thorough, Standard, Quick), and under **Stages**,
   **Find new cells** (on by default; off, Discover keeps tracking the cells it has but finds
-  no new ones; this one applies at once, also during a run) and **Extract after Discover**.
+  no new ones; this one applies at once, also during a run) and **Extract after Discover**
+  (on by default; off, the run is **Discover only**: it writes the footprints with the traces
+  Discover solved as it read, and skips Extract, for when you only want the footprints).
 - **Advanced** (folded): the diameter in pixels set directly (it then overrides the µm
   diameter, and the run record says so), motion correction (largest shift, the template
   time constant), preprocessing, the cell finder's thresholds and memory, the look-back
@@ -450,7 +452,7 @@ A run has two named stages: **Discover** and **Extract** (see
    settle replaced it.
 4. **Extract extracts traces.** It replays the recording with the final library, using
    the motion and flicker recorded during Discover, so a cell found late has a trace from
-   frame 0. Run it with **Extract** once the footprints have settled. It starts by itself when Discover (and its Final settle) ends while **Extract after Discover** is on (the default); turn it off to inspect the footprints first.
+   frame 0. Run it with **Extract** once the footprints have settled. It starts by itself when Discover (and its Final settle) ends while **Extract after Discover** is on (the default). Turn it off for a **Discover only** run: the export then holds the footprints and the traces Discover solved as it read (frames before a cell was found, and early frames of a long run that the trace memory did not keep, are NaN; no signed traces), and the run file lists Extract as skipped.
 5. **Export.** Once Extract has finished, the **Export** button on the run rail opens a menu with **Export (.npz)**, which writes the main file: traces (cells x frames), cell
    ids and centroids, sparse footprints, per-frame motion and flicker, per-cell QC,
    and a JSON block with the run's provenance and the stages that ran. It holds two

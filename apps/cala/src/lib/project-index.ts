@@ -38,7 +38,7 @@ export function projectSessionId(dir: string): string {
   return slash < 0 ? '.' : dir.slice(slash + 1);
 }
 
-export type StageState = 'done' | 'error' | 'cancelled' | 'running' | 'none';
+export type StageState = 'done' | 'error' | 'cancelled' | 'running' | 'skipped' | 'none';
 
 export interface SessionStatus {
   discover: StageState;
@@ -61,7 +61,9 @@ function lastOf(stages: readonly Record<string, unknown>[], name: string): Stage
   const runs = stages.filter((s) => s.stage === name);
   if (runs.length === 0) return 'none';
   const o = runs[runs.length - 1].outcome;
-  return o === 'done' || o === 'error' || o === 'cancelled' || o === 'running' ? o : 'none';
+  return o === 'done' || o === 'error' || o === 'cancelled' || o === 'running' || o === 'skipped'
+    ? o
+    : 'none';
 }
 
 const isoMs = (s: string): number => {

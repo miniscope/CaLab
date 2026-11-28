@@ -102,7 +102,7 @@ A record maps to settings like this (`settingsFromRecord`):
 | `target_speed_fps`       | target speed at the start of the run (0: Max)                                                                                                                     | `?debug&pacefps=`           |
 | `smooth_playback`        | smooth playback                                                                                                                                                   | `?debug&smooth=0`           |
 | `library_mode`           | Joint or Separate (the plan step's kind; a single recording is Separate)                                                                                          |                             |
-| `extract_after_discover` | every run Extracts after Discover (true)                                                                                                                          |                             |
+| `extract_after_discover` | the run Extracts after Discover (`stages.extract`); false: Discover only, and `stages` ends with `{"stage": "extract", "outcome": "skipped"}`                     |                             |
 | `export_pass_qc_only`    | export only cells that pass QC (not written by the app's runs)                                                                                                    |                             |
 
 With `?debug`, `__cala.applyRunRecord(recordOrJsonText)` (a record, a whole

@@ -619,6 +619,8 @@ export interface RunRecordInput {
     flat_field: { enabled: boolean; reused_from_cache: boolean; key_source: string | null };
   };
   stages: readonly StageRun[];
+  /** A Discover-only run (`stages.extract` off): Extract is listed as skipped. */
+  extractSkipped?: boolean;
   settle: SettleSummary | null;
   settleTimes: SettleTimes;
   targetSpeed: readonly TargetSpeedChange[];
@@ -640,6 +642,15 @@ export interface RunRecordInput {
   /** The Speed control's slots (`WORK_SLIDER_SLOTS`); absent slots are written as null. */
   slots?: Partial<Record<WorkSliderSlot, unknown>>;
 }
+
+/** The stage row of a Discover-only run's skipped Extract (written, never in the stage log). */
+export const EXTRACT_SKIPPED_STAGE = {
+  stage: 'extract',
+  outcome: 'skipped',
+  started_at: null,
+  ended_at: null,
+  reason: 'Discover only: stages.extract is off',
+} as const;
 
 /** The run record document (snake_case JSON). */
 export function buildRunRecord(i: RunRecordInput): Record<string, unknown> {
@@ -664,7 +675,7 @@ export function buildRunRecord(i: RunRecordInput): Record<string, unknown> {
     url_flags: flags,
     input: i.input,
     runtime: i.runtime,
-    stages: i.stages.map(stageMeta),
+    stages: [...i.stages.map(stageMeta), ...(i.extractSkipped ? [EXTRACT_SKIPPED_STAGE] : [])],
     final_settle: {
       ...(i.settle
         ? {
@@ -839,7 +850,7 @@ export interface RunRecordExtras {
   mode?: string;
   /** Separate: the 0-based session this record is for. */
   sessionIndex?: number;
-  /** "Extract after Discover". */
+  /** "Extract after Discover" (`stages.extract`); false: a Discover-only run, Extract skipped. */
   extractAfterDiscover?: boolean;
   /** Export only cells that pass QC (the Run tab's single export only; automatic runs export every session's QC-flagged cells). */
   passQcOnly?: boolean;
@@ -972,6 +983,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       },
     },
     stages: src.stageRuns(),
+    extractSkipped: extras.extractAfterDiscover === false,
     settle: settle
       ? {
           fed: settle.fed,

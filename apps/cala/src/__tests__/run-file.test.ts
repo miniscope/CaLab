@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { checkFile, fileText, readRunFile } from '@calab/project';
 import { calaRunFile, type CalaRunInput, type RunFileSession } from '../lib/run-file.ts';
+import { EXTRACT_SKIPPED_STAGE } from '../lib/run-provenance.ts';
 import { CALA_PARAMS_VERSION } from '../params/schema.ts';
 
 /**
@@ -189,5 +190,33 @@ describe('calaRunFile', () => {
     expect(doc.inputs[0]).toMatchObject({ role: 'live', fps: { value: 30, source: 'live' } });
     expect(doc.derived['/time/fps']).toMatchObject({ method: 'live' });
     expect(checkFile('run', doc)).toEqual([]);
+  });
+});
+
+describe('the run file of a Discover-only run', () => {
+  it('says Extract was skipped and keeps stages.extract off in its config', () => {
+    const base = input();
+    const doc = calaRunFile(
+      input({
+        record: {
+          ...base.record,
+          settings: { extract_after_discover: false },
+          params: {
+            values: { stages: { find_new_cells: true, extract: false } },
+            requested: { stages: { extract: false } },
+            sources: { '/stages/extract': 'ui' },
+          },
+          stages: [{ stage: 'discover', outcome: 'done' }, { ...EXTRACT_SKIPPED_STAGE }],
+        },
+      }),
+    );
+    expect(doc.stages.map((s) => [s.stage, s.outcome])).toEqual([
+      ['discover', 'done'],
+      ['extract', 'skipped'],
+    ]);
+    expect(doc.config.resolved).toEqual({ stages: { find_new_cells: true, extract: false } });
+    expect(doc.config.requested).toEqual({ stages: { extract: false } });
+    expect(doc.config.sources).toEqual({ '/stages/extract': 'ui' });
+    expect(doc.record).toMatchObject({ settings: { extract_after_discover: false } });
   });
 });

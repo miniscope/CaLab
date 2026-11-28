@@ -11,8 +11,7 @@ import type { LibraryMode } from '../lib/session-run.ts';
 import { workText } from '../lib/work-meter.ts';
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
 import {
-  extractAfterDiscover,
-  setExtractAfterDiscover,
+  DISCOVER_ONLY_NOTE,
   LIVE_NOTE,
   NEXT_STEP_HINT,
   showNextStepHint,
@@ -133,7 +132,8 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   // ---- Extract ----
   /** Extract runs in this run: a recording, or a stream whose factors it solves on. */
   const extracts = () => !props.live || props.factorRun === true;
-  const auto = extractAfterDiscover;
+  /** Extract follows Discover in this run (`stages.extract`; off: a Discover-only run). */
+  const auto = () => s().extractRun();
   const liveResult = () => props.liveResult?.() ?? null;
 
   // A new Discover run invalidates Extract's result.
@@ -193,6 +193,12 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       case 'cancelled':
         return 'Extract cancelled';
       default:
+        if (extracts() && !auto() && !pass1Busy()) {
+          const r = liveResult();
+          return r
+            ? `Discover only: ${r.cells} cells x ${r.frames.toLocaleString()} frames of Discover's traces to export`
+            : 'Discover only: no Extract in this run';
+        }
         if (!extracts()) {
           if (pass1Busy()) return 'Live: the traces are solved as the frames come in';
           const r = liveResult();
@@ -203,7 +209,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         return pass1Busy()
           ? auto()
             ? 'Extract starts when Discover finishes'
-            : 'Extract runs after Discover finishes'
+            : 'Discover only: no Extract after it'
           : (props.availability.extract ?? 'Ready to Extract');
     }
   };
@@ -225,7 +231,6 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     cells: c(),
     pass2: p(),
     live: props.live,
-    sessionRun: props.sessionMode != null,
   }));
   const step = (key: 'discover' | 'settle' | 'extract') => stepOf(steps3(), key);
 
@@ -326,9 +331,6 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             <SettingsSummary
               pipeline={s()}
               context={settingsContext()}
-              autoExtract={auto()}
-              onAutoExtract={setExtractAfterDiscover}
-              sessionRun={inSessionRun()}
               extractRunning={p().status() === 'running'}
               frameWidth={props.frameWidth}
               projectParams={props.projectParams}
@@ -338,9 +340,6 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           <PreRunSheet
             pipeline={s()}
             context="prerun"
-            autoExtract={auto()}
-            onAutoExtract={setExtractAfterDiscover}
-            sessionRun={props.onRun !== undefined}
             frameWidth={props.frameWidth}
             projectParams={props.projectParams}
             onRun={() => (props.onRun ? props.onRun() : void s().start())}
@@ -516,7 +515,12 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               {props.factorRun ? FACTORS_LIVE_NOTE : LIVE_NOTE}
             </p>
           </Show>
-          <Show when={!props.live}>
+          <Show when={!props.live && !auto()}>
+            <p class="cala-muted cala-run__line" data-testid="discover-only-hint">
+              {DISCOVER_ONLY_NOTE}
+            </p>
+          </Show>
+          <Show when={!props.live && auto()}>
             <Show
               when={showNextStepHint({
                 live: props.live === true,
@@ -531,9 +535,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           </Show>
           <div class="cala-run__footer">
             <Show
-              when={p().status() !== 'running' && extracts()}
+              when={p().status() !== 'running' && extracts() && auto()}
               fallback={
-                <Show when={extracts()}>
+                <Show when={extracts() && p().status() === 'running'}>
                   <button
                     type="button"
                     class="btn-secondary btn-small"

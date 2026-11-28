@@ -54,6 +54,11 @@ export interface RunParamsSettings {
   finalSettleLevel?: FinalSettleLevel;
   /** Find new cells (`stages.find_new_cells`; absent: the default). */
   findNewCells?: boolean;
+  /**
+   * Extract after Discover (`stages.extract`; absent: the default, on). Off: the run stops
+   * after Discover and writes the footprints with Discover's traces.
+   */
+  extract?: boolean;
   /** Online QC of the traces (`qc.enabled`; absent: the default). */
   qc?: boolean;
   /** A repeatable run (`compute.repeatable`; absent: the default). */
@@ -106,11 +111,14 @@ export function runParamsLayer(s: RunParamsSettings): ParamsLayer {
           },
         }
       : {}),
-    // Every run Extracts after its Discover (`multi-run.ts`).
-    stages: {
-      extract: true,
-      ...(s.findNewCells !== undefined ? { find_new_cells: s.findNewCells } : {}),
-    },
+    ...(s.findNewCells !== undefined || s.extract !== undefined
+      ? {
+          stages: {
+            ...(s.findNewCells !== undefined ? { find_new_cells: s.findNewCells } : {}),
+            ...(s.extract !== undefined ? { extract: s.extract } : {}),
+          },
+        }
+      : {}),
     ...(s.qc !== undefined ? { qc: { enabled: s.qc } } : {}),
     ...(s.repeatable !== undefined ? { compute: { repeatable: s.repeatable } } : {}),
     ...(s.flicker ? { preprocess: { flicker: s.flicker } } : {}),

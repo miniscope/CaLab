@@ -182,6 +182,10 @@ export const EXPORT_FORMAT_VERSION = 8;
 export const FACTORS_EXPORT_NOTE =
   "Settle and Extract read the factors Discover wrote during the stream; there was no file to re-read. Extract's traces (traces, traces_signed) are solved on low-rank frames and carry less per-frame noise than the live traces (traces_live).";
 
+/** `meta_json.notes` of a Discover-only run (`stages.extract` off). */
+export const DISCOVER_ONLY_EXPORT_NOTE =
+  "Discover only (stages.extract off): Extract was skipped. The traces are the ones Discover solved as the frames were read (no traces_signed); a cell's frames before it was found, and early frames a long run's trace memory did not keep, are NaN.";
+
 export function factorTailNote(frames: number, of: number): string {
   return `The stream's last ${of - frames} frame(s) formed a window too short to compress; this export covers frames 0-${frames - 1}.`;
 }

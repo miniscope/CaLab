@@ -10,7 +10,6 @@ import { createEffect, createSignal, For, on, Show, type JSX } from 'solid-js';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { Pass2Store } from '../lib/pass2-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
-import { extractAfterDiscover } from '../lib/run-stages.ts';
 import { CSETTLE, SETTLE } from '../lib/settle.ts';
 import { lookbackFacts, notSettled, settleNote, type LookbackFacts } from '../lib/lookback-text.ts';
 import { RAIL_SPEED_RANGE } from '../lib/rail-view.ts';
@@ -48,8 +47,6 @@ export interface StepSources {
   cells: CellStore;
   pass2: Pass2Store;
   live?: boolean;
-  /** A multi-session run (it always Extracts each session). */
-  sessionRun?: boolean;
 }
 
 /** The three steps now, from the stores. */
@@ -82,7 +79,7 @@ export function createSteps(src: () => StepSources): () => StepView[] {
       extractDone: p.processed(),
       extractTotal: p.total(),
       extractFps: p.fps(),
-      autoExtract: o.sessionRun === true || extractAfterDiscover(),
+      autoExtract: s.extractRun(),
       factorRun: s.factorRun(),
       // The visit hold, only while it binds (below the user's target, or any hold at Max).
       visitHold: visitHoldText(s.visitHold(), s.paceTarget()) !== null ? s.visitHold() : null,
