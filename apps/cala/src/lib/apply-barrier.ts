@@ -5,7 +5,8 @@
  * holds what came back early, and says when a batch end has to wait for something late.
  *
  * Pure (no workers, no clocks), so the order rules are unit-tested on their own; `SlowRunner`
- * owns the waiting and the applying.
+ * owns the waiting and the applying. The frame clock is the caller's: stream frames in Discover,
+ * settle frames fed in the Final settle (`FinalSettleDriver`, with its own lag).
  */
 import { PACE_BATCH } from './frame-pacer.ts';
 
@@ -85,6 +86,11 @@ export class ApplyBarrier<T> {
     it.arrived = true;
     this.wake();
     return true;
+  }
+
+  /** The earliest `due` of what is out or held (Infinity: nothing). */
+  nextDue(): number {
+    return this.items.reduce((m, it) => Math.min(m, it.due), Infinity);
   }
 
   /** Everything due by stream frame `frame` is back. */
