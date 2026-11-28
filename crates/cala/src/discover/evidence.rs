@@ -3,7 +3,7 @@
 
 #[cfg(feature = "diagnostics")]
 use super::diagnostics;
-use super::fpstats::{parity_block, FpStats};
+use super::fpstats::{parity_block, pixel_runs, FpStats};
 use super::ledger::Evidence;
 use super::math::column_on;
 use super::{timing, SlowLoop};
@@ -18,6 +18,9 @@ pub(super) struct LedgerProj {
     pub(super) version: u64,
     pub(super) start: Vec<usize>,
     pub(super) pix: Vec<u32>,
+    /// Each slot's pixels as row runs: `runs[run_start[s]..run_start[s + 1]]`.
+    pub(super) runs: Vec<(u32, u32)>,
+    pub(super) run_start: Vec<usize>,
     pub(super) w: Vec<f32>,
     /// `h w` per pixel: the pixel's share of the coordinate normaliser
     /// (what a missing pixel takes out of it).
@@ -30,9 +33,10 @@ pub(super) struct LedgerProj {
 }
 
 impl SlowLoop {
-    /// Ledger update for one frame: each published cell's unconstrained
-    /// coordinate `u = c + hᵀ Σ⁻¹ (y − model − level) / hᵀ Σ⁻¹ h`.
-    pub(super) fn update_ledger(&mut self, frame: &[f32], lib: &Library, traces: &FrameTraces) {
+    /// Ledger update for one frame (its residual in `self.resid`): each
+    /// published cell's unconstrained coordinate `u = c + hᵀ Σ⁻¹ (y − model −
+    /// level) / hᵀ Σ⁻¹ h`.
+    pub(super) fn update_ledger(&mut self, lib: &Library, traces: &FrameTraces) {
         if self.lproj.version != lib.version() {
             self.build_lproj(lib);
         }
@@ -40,23 +44,19 @@ impl SlowLoop {
             && traces.background.len() == lib.len();
         let (ez, ef) = (self.cfg.event_z, self.cfg.event_frames);
         let lp = &self.lproj;
+        let d = &self.resid.d;
         let mut work = 0u64;
         for (slot, &id) in lib.ids().iter().enumerate() {
             let (a, b) = (lp.start[slot], lp.start[slot + 1]);
-            let mut g = 0.0f32;
+            let (pix, w) = (&lp.pix[a..b], &lp.w[a..b]);
+            let runs = &lp.runs[lp.run_start[slot]..lp.run_start[slot + 1]];
+            let mut g = runs_dot(d, runs, w);
             // What the missing pixels of this frame take out of the
             // normaliser `hᵀΣ⁻¹h` and of `Σ h/σ²`: they have zero weight, so
             // the correction is over the valid pixels only.
             let (mut n_miss, mut w_miss) = (0.0f32, 0.0f32);
-            for k in a..b {
-                let p = lp.pix[k] as usize;
-                let y = frame[p];
-                if y.is_finite() {
-                    g += lp.w[k] * (y - self.model[p]);
-                } else {
-                    n_miss += lp.nw[k];
-                    w_miss += lp.w[k];
-                }
+            if g.is_nan() {
+                (g, n_miss, w_miss) = masked_dot(d, pix, w, &lp.nw[a..b]);
             }
             work += (b - a) as u64 * 2;
             let level = if ring { traces.background[slot] } else { 0.0 };
@@ -113,6 +113,7 @@ impl SlowLoop {
         if self.stats_w > 1024.0 {
             let f = 1.0 / self.stats_w;
             self.fpstats.values_mut().for_each(|s| s.scale(f));
+            self.stats_p.iter_mut().for_each(|v| *v *= f64::from(f));
             self.clusters.iter_mut().for_each(|c| c.scale(f64::from(f)));
             self.stats_w = 1.0;
         }
@@ -122,6 +123,10 @@ impl SlowLoop {
         let margin = self.cfg.stats_margin_cells * self.cfg.cell_diameter_px;
         let (width, height) = (self.dims.width, self.dims.height);
         let version = lib.version();
+        // A frame for every cell also goes into the shared field (after the
+        // cells, so each cell sees the field before this frame).
+        let field = self.lb_only.is_none();
+        let gen = self.stats_gen + u64::from(field);
         let mut work = 0u64;
         for (slot, &id) in lib.ids().iter().enumerate() {
             if self.lb_only.as_ref().is_some_and(|o| !o.contains(&id)) {
@@ -144,12 +149,13 @@ impl SlowLoop {
             // rather than at zero.
             let mut old_pix = None;
             if !st.covers(center, radius) || st.radius > radius + 2.0 * margin {
+                st.materialise(&self.stats_p);
                 let moved = st.moved(center, want, width, height, &self.fov);
                 let old = std::mem::replace(st, moved);
                 old_pix = Some(old.pix);
             }
             if st.version != version || old_pix.is_some() {
-                st.col = column_on(lib, slot, &st.pix);
+                st.set_col(column_on(lib, slot, &st.pix));
                 st.version = version;
             }
             if let Some(old) = &old_pix {
@@ -157,11 +163,38 @@ impl SlowLoop {
             }
             let c = traces.traces[slot];
             let level = if ring { traces.background[slot] } else { 0.0 };
-            // Missing pixels (non-finite `y`) get zero weight in the
-            // statistics (NaN marks them; `FpStats::push` leaves their
-            // moments alone).
-            st.push_frame(frame, &self.model, level, c, w, &mut self.rbuf);
+            // A disk with a missing sample (non-finite `y`) takes the plain
+            // path, which gives those samples zero weight and keeps
+            // per-pixel moments from then on (`FpStats::push`).
+            let complete = level.is_finite() && !self.resid.missing_in(st.runs());
+            #[cfg(test)]
+            let complete = complete && !self.stats_plain;
+            if complete {
+                st.rebase(&self.stats_p, self.stats_gen);
+            } else {
+                st.materialise(&self.stats_p);
+            }
+            if st.mf.is_none() {
+                st.push_frame(frame, &self.model, level, c, w, &mut self.rbuf);
+            } else if c.is_nan() {
+                // No push (as `FpStats::push`), so not the field's frame either.
+                if field {
+                    st.exclude(&self.resid.d, w, gen);
+                }
+            } else {
+                st.push_mean(&self.resid.d, &self.stats_p, level, c, w, field, gen);
+            }
             work += st.pix.len() as u64 * 3;
+        }
+        if field {
+            // Cells with statistics that are not in this frame's library.
+            for st in self.fpstats.values_mut() {
+                if st.mf.as_ref().is_some_and(|m| m.gen != gen) {
+                    st.exclude(&self.resid.d, w, gen);
+                }
+            }
+            self.resid.add_to(&mut self.stats_p, w);
+            self.stats_gen = gen;
         }
         #[cfg(feature = "diagnostics")]
         let t1 = std::time::Instant::now();
@@ -176,6 +209,12 @@ impl SlowLoop {
         self.work += work;
         self.stats.work_stats += work;
         (per_cell_ms, clusters_ms)
+    }
+
+    /// Cell `id`'s running statistics with plain sums (what every reader of
+    /// the sums or the estimates uses; see `FpStats::materialised`).
+    pub(super) fn stats_of(&self, id: u64) -> Option<std::borrow::Cow<'_, FpStats>> {
+        self.fpstats.get(&id).map(|s| s.materialised(&self.stats_p))
     }
 
     /// The cell `id`'s running statistics start over with its next column
@@ -229,6 +268,7 @@ impl SlowLoop {
         let mut lp = LedgerProj {
             version: lib.version(),
             start: vec![0],
+            run_start: vec![0],
             ..LedgerProj::default()
         };
         for slot in 0..lib.len() {
@@ -244,6 +284,8 @@ impl SlowLoop {
                 ws += f64::from(w);
             }
             lp.start.push(lp.pix.len());
+            lp.runs.extend(pixel_runs(pix));
+            lp.run_start.push(lp.runs.len());
             let inv_n = if n > 0.0 { (1.0 / n) as f32 } else { 0.0 };
             lp.inv_n.push(inv_n);
             lp.wsum.push(ws as f32);
@@ -272,4 +314,44 @@ impl SlowLoop {
         self.lproj_ids = lib.ids().to_vec();
         self.lproj = lp;
     }
+}
+
+/// `Σ_k w[k] d[pix[k]]` with `pix` given as its row runs ([`pixel_runs`]):
+/// each run's chunks of eight go into eight lane sums (a run's tail into the
+/// first lanes), reduced as `cluster::dot_lanes` does. NaN when one of the samples
+/// is missing.
+pub(crate) fn runs_dot(d: &[f32], runs: &[(u32, u32)], w: &[f32]) -> f32 {
+    let mut acc = [0.0f32; 8];
+    let mut i = 0;
+    for &(s, len) in runs {
+        let (s, len) = (s as usize, len as usize);
+        let (cd, rd) = d[s..s + len].as_chunks::<8>();
+        let (cw, rw) = w[i..i + len].as_chunks::<8>();
+        for (x, y) in cd.iter().zip(cw) {
+            for l in 0..8 {
+                acc[l] += x[l] * y[l];
+            }
+        }
+        for (l, (x, y)) in rd.iter().zip(rw).enumerate() {
+            acc[l] += x * y;
+        }
+        i += len;
+    }
+    ((acc[0] + acc[4]) + (acc[1] + acc[5])) + ((acc[2] + acc[6]) + (acc[3] + acc[7]))
+}
+
+/// `(Σ w d, Σ nw, Σ w)`: the first over the valid samples of `d` on `pix`,
+/// the other two over the missing ones (serial sums, in pixel order).
+pub(crate) fn masked_dot(d: &[f32], pix: &[u32], w: &[f32], nw: &[f32]) -> (f32, f32, f32) {
+    let (mut g, mut n_miss, mut w_miss) = (0.0f32, 0.0f32, 0.0f32);
+    for ((&p, &wk), &nk) in pix.iter().zip(w).zip(nw) {
+        let v = d[p as usize];
+        if v.is_nan() {
+            n_miss += nk;
+            w_miss += wk;
+        } else {
+            g += wk * v;
+        }
+    }
+    (g, n_miss, w_miss)
 }

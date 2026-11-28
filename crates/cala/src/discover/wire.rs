@@ -210,6 +210,7 @@ impl Writer {
         self.u64(t.last_visit);
     }
     pub fn fpstats(&mut self, s: &FpStats) {
+        debug_assert!(s.mf.is_none(), "write materialised statistics");
         self.f32(s.center.0);
         self.f32(s.center.1);
         self.f32(s.radius);
@@ -454,6 +455,7 @@ impl<'a> Reader<'a> {
             pm: None,
             half_pm: None,
             runs: Vec::new(),
+            mf: None,
         })
         .and_then(|mut s: FpStats| {
             if s.cls.len() != s.pix.len() {

@@ -704,7 +704,7 @@ impl SlowLoop {
             .collect();
         let fpstats = ids
             .iter()
-            .filter_map(|id| self.fpstats.get(id).map(|s| (*id, s.clone())))
+            .filter_map(|id| self.stats_of(*id).map(|s| (*id, s.into_owned())))
             .collect();
         // (Only a refining visit reads the clusters.)
         let clusters = if self.refines_on(self.tile_visits[ti]) {

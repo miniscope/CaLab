@@ -223,6 +223,10 @@ macro_rules! journal {
 }
 
 mod add;
+/// Micro-benchmark of the statistics kernels (feature `timing`; measurement only).
+#[cfg(feature = "timing")]
+#[doc(hidden)]
+pub mod bench;
 mod churn;
 mod cluster;
 mod config;
@@ -404,6 +408,17 @@ pub struct SlowLoop {
     pub publish_tap: Option<PublishTap>,
     stats_w: f32,
     stats_gamma: f32,
+    /// The shared field of the mean-field statistics (`fpstats::MeanField`):
+    /// `Σ w d` per pixel over the fitting frames pushed to every cell, and
+    /// how many such pushes it holds.
+    stats_p: Vec<f64>,
+    stats_gen: u64,
+    /// Tests: keep every cell's statistics in plain form (the reference the
+    /// mean-field form is checked against).
+    #[cfg(test)]
+    stats_plain: bool,
+    /// The residual `y − model` of the frame being fed.
+    resid: fpstats::Residual,
     rbuf: Vec<f32>,
     /// During [`SlowLoop::observe_lookback`] with a cell set: only these
     /// cells' statistics (and clusters with one of them) take the frame.
@@ -624,6 +639,11 @@ impl SlowLoop {
             publish_tap: None,
             stats_w: 1.0,
             stats_gamma: 0.5f32.powf(1.0 / cfg.stats_half_life_frames),
+            stats_p: vec![0.0; n_px],
+            stats_gen: 0,
+            #[cfg(test)]
+            stats_plain: false,
+            resid: fpstats::Residual::default(),
             rbuf: Vec::new(),
             lb_only: None,
             res_frozen: false,
@@ -778,7 +798,7 @@ impl SlowLoop {
     /// the noise of the full estimate). `None` without usable halves or
     /// overlap. Scale free, so it compares with a relative footprint change.
     pub fn footprint_noise(&self, id: u64, support: &[u32]) -> Option<f64> {
-        let st = self.fpstats.get(&id)?;
+        let st = self.stats_of(id)?;
         let (ha, hb, _, _) = st.halves()?;
         let want: std::collections::HashSet<u32> = support.iter().copied().collect();
         let (mut d2, mut m2) = (0.0f64, 0.0f64);
