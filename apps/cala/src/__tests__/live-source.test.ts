@@ -2,7 +2,8 @@
 import { describe, expect, it } from 'vitest';
 import { LIVE_HEADER_BYTES, LIVE_MAGIC, LiveSource, type SocketLike } from '../lib/live-source.ts';
 import { nextStep } from '../lib/pipeline-types.ts';
-import { makePlan, PipelineCursor, UNBOUNDED } from '../lib/pipeline-plan.ts';
+import { PipelineCursor, UNBOUNDED } from '../lib/pipeline-plan.ts';
+import { testPlan } from './params-fixtures.ts';
 
 const W = 4;
 const H = 3;
@@ -182,7 +183,7 @@ describe('LiveSource', () => {
 
 describe('unbounded pipeline plan', () => {
   it('keeps the warm-ups and hands out batches until the stream is bounded', async () => {
-    const plan = makePlan(UNBOUNDED, { calibrationFrames: 3, motionWarmupFrames: 2, batchSize: 2 });
+    const plan = testPlan(UNBOUNDED, { calibrationFrames: 3, motionWarmupFrames: 2, batchSize: 2 });
     expect(plan).toMatchObject({
       frameCount: UNBOUNDED,
       calibrationFrames: 3,
@@ -207,7 +208,7 @@ describe('unbounded pipeline plan', () => {
   });
 
   it('bounds a stream that ends during the calibration', async () => {
-    const plan = makePlan(UNBOUNDED, { calibrationFrames: 200, motionWarmupFrames: 200 });
+    const plan = testPlan(UNBOUNDED, { calibrationFrames: 200, motionWarmupFrames: 200 });
     const { socket, source } = await open();
     const cursor = new PipelineCursor(plan);
     const first = nextStep(cursor, source);

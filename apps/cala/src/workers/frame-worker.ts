@@ -210,17 +210,11 @@ async function handle(req: FrameRequest): Promise<void> {
           flatPort && !req.replay && req.options.flatField !== false
             ? new PortSink(flatPort, flatSession)
             : null;
-        const stage = new FrontStage(
-          src,
-          req.options,
-          () => frontPool!.acquire(),
-          req.replay,
-          {
-            session: flatSession,
-            ...(flatSink ? { sink: flatSink } : {}),
-            ...(req.flat?.seed ? { initial: req.flat.seed } : {}),
-          },
-        );
+        const stage = new FrontStage(src, req.options, () => frontPool!.acquire(), req.replay, {
+          session: flatSession,
+          ...(flatSink ? { sink: flatSink } : {}),
+          ...(req.flat?.seed ? { initial: req.flat.seed } : {}),
+        });
         live?.setRetainFrames(
           Math.max(stage.plan.calibrationFrames, stage.plan.motionWarmupFrames),
         );

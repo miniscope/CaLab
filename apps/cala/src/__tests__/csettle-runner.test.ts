@@ -5,12 +5,13 @@
  * look-back worker, and what reaches the slow loop.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { buildSlowLoop, SlowRunner } from '../lib/slow-runner.ts';
+import { SlowRunner } from '../lib/slow-runner.ts';
 import { lookbackFrames } from '../lib/lookback-reader.ts';
 import { CSETTLE } from '../lib/settle.ts';
 import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';
 import type { FastToSlow, SlowInit, SlowToFast, SlowToMain } from '../workers/slow-types.ts';
 import { fakeLib, INIT as BASE_INIT, stubSlowLoop } from './slow-fixtures.ts';
+import { DEFAULT_PARAMS } from './params-fixtures.ts';
 
 const INIT: Extract<FastToSlow, { type: 'init' }> = { ...BASE_INIT, lookback: true };
 
@@ -271,31 +272,6 @@ describe('settle during Discover: off by default', () => {
     a.live(8);
     expect(a.created[0]).not.toHaveProperty('csettle');
     expect(a.toLb).toEqual([]);
-  });
-
-  it('buildSlowLoop never turns the engine side on: the runner does, when it arms the settle', () => {
-    class Fake {
-      settle: unknown[] | null = null;
-      static withConfig() {
-        return new Fake();
-      }
-      enableLookback() {}
-      enableSettle(...a: unknown[]) {
-        this.settle = a;
-      }
-    }
-    const init: SlowInit = {
-      width: 4,
-      height: 3,
-      fov: new Uint8Array(12),
-      noise: new Float32Array(12),
-      cellDiameterPx: 9,
-      flattenSigmaPx: 0,
-      budget: 1,
-      lookback: true,
-    };
-    expect(buildSlowLoop(Fake, init).settle).toBeNull();
-    expect(buildSlowLoop(Fake, { ...init, csettle: true }).settle).toBeNull();
   });
 });
 

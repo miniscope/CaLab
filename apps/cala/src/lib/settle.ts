@@ -77,11 +77,7 @@ export interface FrameRun {
  * about `cap` frames in whole `block`-frame blocks spread evenly over the
  * recording (adjacent blocks merged).
  */
-export function settlePlan(
-  total: number,
-  cap: number,
-  block: number = SETTLE.block,
-): FrameRun[] {
+export function settlePlan(total: number, cap: number, block: number = SETTLE.block): FrameRun[] {
   if (!(total > 0)) return [];
   if (total <= cap) return [{ start: 0, end: total }];
   const blocks = Math.ceil(total / block);

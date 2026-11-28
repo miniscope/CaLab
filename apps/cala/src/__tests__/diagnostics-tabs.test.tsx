@@ -40,7 +40,12 @@ function fakeStore(flat: FlatFieldState) {
 }
 
 describe('Flat field tab', () => {
-  const base: FlatFieldState = { ...initialFlatFieldState(), supported: true, fps: 20 };
+  const base: FlatFieldState = {
+    ...initialFlatFieldState(),
+    supported: true,
+    fps: 20,
+    firstFrames: 3000,
+  };
 
   it('shows a hatched placeholder and the progress toward the first map', () => {
     const { store } = fakeStore({ ...base, frames: 1000 });

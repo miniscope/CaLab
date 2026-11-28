@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
-import { buildSlowLoop, FACTOR_NO_ANSWER, framesFrom, SlowRunner } from '../lib/slow-runner.ts';
+import { FACTOR_NO_ANSWER, framesFrom, SlowRunner } from '../lib/slow-runner.ts';
 import { lookbackFrames } from '../lib/lookback-reader.ts';
 import { SETTLE } from '../lib/settle.ts';
 import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';
@@ -13,6 +13,7 @@ import type {
   VisitToOwner,
 } from '../workers/slow-types.ts';
 import { fakeLib, INIT, stubSlowLoop } from './slow-fixtures.ts';
+import { DEFAULT_PARAMS, DEFAULT_RUN } from './params-fixtures.ts';
 
 function frames(start: number, count = 2): Extract<FastToSlow, { type: 'frames' }> {
   return {
@@ -143,67 +144,6 @@ function setup(
 const statuses = (t: { toMain: SlowToMain[] }) =>
   t.toMain.flatMap((m) => (m.type === 'status' ? [m.status] : []));
 const finals = (t: { toMain: SlowToMain[] }) => statuses(t).filter((s) => s.final);
-
-describe('buildSlowLoop', () => {
-  class Fake {
-    args: unknown[];
-    lookback: unknown[] | null = null;
-    constructor(...args: unknown[]) {
-      this.args = ['new', ...args];
-    }
-    static withConfig(...args: unknown[]) {
-      const f = new Fake();
-      f.args = ['withConfig', ...args];
-      return f;
-    }
-    enableLookback(...a: unknown[]) {
-      this.lookback = a;
-    }
-  }
-  const init: SlowInit = {
-    width: 4,
-    height: 3,
-    fov: new Uint8Array(12),
-    noise: new Float32Array(12),
-    cellDiameterPx: 9,
-    flattenSigmaPx: 0,
-    budget: 1,
-  };
-
-  it('uses the plain constructor with look-back off', () => {
-    const l = buildSlowLoop(Fake, init);
-    expect(l.args).toEqual(['new', 4, 3, init.fov, init.noise, 9, 0]);
-    expect(l.lookback).toBeNull();
-  });
-
-  it('a ?factors stream builds with the replay in refine visits only and no look-back', () => {
-    const l = buildSlowLoop(Fake, { ...init, factorSettle: true });
-    expect(l.args).toEqual([
-      'withConfig',
-      4,
-      3,
-      init.fov,
-      init.noise,
-      9,
-      0,
-      'refine',
-      'all',
-      Infinity,
-    ]);
-    expect(l.lookback).toBeNull();
-  });
-
-  it('look-back wins over factorSettle (they never come together)', () => {
-    const l = buildSlowLoop(Fake, { ...init, lookback: true, factorSettle: true });
-    expect(l.args.slice(-3)).toEqual(['all', 'all', 0.6]);
-  });
-
-  it('builds with the look-back options and enables it', () => {
-    const l = buildSlowLoop(Fake, { ...init, lookback: true });
-    expect(l.args).toEqual(['withConfig', 4, 3, init.fov, init.noise, 9, 0, 'all', 'all', 0.6]);
-    expect(l.lookback).toEqual([2, 3000]);
-  });
-});
 
 describe('SlowRunner look-back in a Joint run (fake loop)', () => {
   it('drops look-back frames before a floor, request by request', () => {
@@ -427,13 +367,14 @@ describe('SlowRunner look-back (fake loop)', () => {
   it('a long recording is sampled up to the cap', () => {
     const t = setup(0);
     t.r.handle({ ...INIT, lookback: true });
-    const n = SETTLE.maxFrames + 6400;
+    const cap = DEFAULT_RUN.engine.settle.final_max_frames;
+    const n = cap + 6400;
     t.r.handle(frames(0, n));
     t.r.handle({ type: 'end', session: 1 });
     t.run();
     const st = statuses(t).at(-1)!.lookback!.settle!;
     expect(st.recording).toBe(n);
-    expect(st.total).toBeLessThanOrEqual(SETTLE.maxFrames + SETTLE.block);
+    expect(st.total).toBeLessThanOrEqual(cap + SETTLE.block);
     expect(st.fed).toBe(st.total);
     // Blocks restart the preprocessor at each gap.
     const blocks = new Set(settleReqs(t).flatMap((r) => r.map((f) => f.block)));

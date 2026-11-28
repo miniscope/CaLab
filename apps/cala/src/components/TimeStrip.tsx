@@ -293,7 +293,8 @@ export function TimeStrip(props: TimeStripProps): JSX.Element {
     const ticks = timeTicks(a0, a1, pw);
     const candidates: AxisLabelCandidate[] = ticks.map((tk) => ({ x: xOfT(tk.t), text: tk.label }));
     const settleTotal =
-      c().status()?.lookback?.settle?.total || plannedSettleFrames(total(), s().runParams()?.engine.settle.final_max_frames ?? 0);
+      c().status()?.lookback?.settle?.total ||
+      plannedSettleFrames(total(), s().runParams()?.engine.settle.final_max_frames ?? 0);
     if (fin) {
       candidates.push({ x: fin.x0, text: '0', anchor: 'start', priority: 1 });
       candidates.push({

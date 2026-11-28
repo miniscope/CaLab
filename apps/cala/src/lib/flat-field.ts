@@ -210,7 +210,10 @@ export function flatFieldStatusLine(s: FlatFieldState): string {
   }
   if (!s.map) {
     const k = flatFieldSeconds(s);
-    return `estimating (${Math.floor(k)} / ${Math.round(flatFieldFirstSeconds(s))} s of frames)`;
+    const first = flatFieldFirstSeconds(s);
+    return first > 0
+      ? `estimating (${Math.floor(k)} / ${Math.round(first)} s of frames)`
+      : `estimating (${Math.floor(k)} s of frames)`;
   }
   if (s.reused) {
     return s.updates > 0

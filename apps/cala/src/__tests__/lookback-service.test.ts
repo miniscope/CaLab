@@ -28,6 +28,7 @@ function fakeReader() {
       back = `back${s[0]}`;
     },
     setSession: () => {},
+    setParams: () => {},
     setFlatField: (m) => {
       flat = m ? `flat${m.dark}` : 'none';
     },

@@ -210,7 +210,9 @@ export class FinalSettleDriver {
     // The frames Discover forwarded: the recording (stream index = file frame).
     const init = this.r.init;
     const cap = init ? runParams(init.params).engine.settle.final_max_frames : 0;
-    const feed = new SettleFeed(truncatePlan(settlePlan(recording, cap), init?.settleFraction ?? 1));
+    const feed = new SettleFeed(
+      truncatePlan(settlePlan(recording, cap), init?.settleFraction ?? 1),
+    );
     this.state = {
       phase: 'sweep',
       feed,

@@ -102,7 +102,10 @@ export function paramsContext(info: {
   width: number;
   height: number;
 }): ParamsContext {
-  const fps = typeof info.fps === 'number' && Number.isFinite(info.fps) && info.fps > 0 ? info.fps : ASSUMED_FPS;
+  const fps =
+    typeof info.fps === 'number' && Number.isFinite(info.fps) && info.fps > 0
+      ? info.fps
+      : ASSUMED_FPS;
   return { fps, frame: [info.width, info.height] };
 }
 
@@ -146,5 +149,11 @@ export interface RunParams {
 /** Parse the resolved params' text. */
 export function runParams(json: string): RunParams {
   const v = JSON.parse(json) as Omit<RunParams, 'json'>;
-  return { json, params: v.params, context: v.context, fingerprint: v.fingerprint, engine: v.engine };
+  return {
+    json,
+    params: v.params,
+    context: v.context,
+    fingerprint: v.fingerprint,
+    engine: v.engine,
+  };
 }

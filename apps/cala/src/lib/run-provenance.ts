@@ -891,7 +891,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       ...(extras.passQcOnly !== undefined ? { export_pass_qc_only: extras.passQcOnly } : {}),
     },
     ...(src.tunables ? { tunables: src.tunables() } : {}),
-    ...(paramsOf(src.params?.() ?? null)),
+    ...paramsOf(src.params?.() ?? null),
     input: {
       label: src.label(),
       live: info?.live !== undefined,

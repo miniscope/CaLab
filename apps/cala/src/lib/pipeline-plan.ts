@@ -44,7 +44,6 @@ export interface PipelineOptions {
 /** Longest side of the preview images sent to the UI, px. */
 export const PREVIEW_MAX_SIDE = 320;
 
-
 /** The walks over the recording, in order. */
 export type PipelinePhase = 'calibrate' | 'motion-warmup' | 'process';
 

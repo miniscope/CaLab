@@ -86,6 +86,7 @@ vi.mock('../lib/lookback-client.ts', async (importOriginal) => ({
 }));
 
 import App from '../App.tsx';
+import { DEFAULT_PARAMS } from './params-fixtures.ts';
 
 HTMLCanvasElement.prototype.getContext = (() =>
   null) as typeof HTMLCanvasElement.prototype.getContext;
@@ -98,6 +99,7 @@ const PLAN: PipelinePlan = {
   previewMaxSide: 320,
   boundaries: [],
   sessionFix: true,
+  params: DEFAULT_PARAMS,
 };
 
 const image = () => ({ width: 4, height: 3, data: new Float32Array(12) });

@@ -23,7 +23,8 @@ export interface RunCells {
   lookback?: boolean;
   /**
    * A live stream with `?factors` (never with `lookback`; absent = off): the slow loop is built
-   * with `FACTOR_SETTLE` (visit workers alike) and, after the last frame, waits for the stream's
+   * with the cluster replay of `settle.on_factors` (`run-params.ts`; visit workers alike) and,
+   * after the last frame, waits for the stream's
    * factors and settles on them (see `SlowRunner`).
    */
   factorSettle?: boolean;
@@ -139,7 +140,10 @@ export function fastLoopOptions(
 }
 
 /** The `CompressFeed` options of a run that feeds the compress worker (`cells.compress`). */
-export function compressFeedOptions(cells: CellsSettings, setup: FastLoopSetup): CompressFeedOptions {
+export function compressFeedOptions(
+  cells: CellsSettings,
+  setup: FastLoopSetup,
+): CompressFeedOptions {
   return {
     width: setup.width,
     height: setup.height,

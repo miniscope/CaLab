@@ -220,6 +220,10 @@ export function createFlatFieldStore(deps: FlatFieldDeps) {
     flatField,
     /** The newest map of this run (null: none). */
     flatFieldMap: () => flatLatest,
+    /** The run's frame rate and frames before the first map (its resolved params), for the progress. */
+    setSchedule(fps: number, firstFrames: number): void {
+      patchFlat({ fps, firstFrames });
+    },
     flushFlatField,
     noteApplied,
     reset,

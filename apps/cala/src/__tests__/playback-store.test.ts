@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRoot } from 'solid-js';
 import type { PipelineClient } from '../lib/frame-client.ts';
 import type { PipelineStepResult } from '../lib/pipeline-types.ts';
-import { makePlan } from '../lib/pipeline-plan.ts';
 import { createPipelineStore } from '../lib/pipeline-store.ts';
 
 import { stepBatch } from './step-fixtures.ts';
+import { testPlan } from './params-fixtures.ts';
 const img = () => ({ width: 2, height: 1, data: new Float32Array(2) });
 
 /** A batch of `count` frames from `start`, with every frame's preview of the output view (value = frame). */
@@ -48,7 +48,7 @@ describe('smooth playback in the pipeline store', () => {
     let i = 0;
     const asked: (string | null)[] = [];
     const client: PipelineClient = {
-      startPipeline: (async () => makePlan(100)) as unknown as PipelineClient['startPipeline'],
+      startPipeline: (async () => testPlan(100)) as unknown as PipelineClient['startPipeline'],
       stepPipeline: () =>
         i < steps.length ? Promise.resolve(steps[i++]) : new Promise<PipelineStepResult>(() => {}),
       stopPipeline: async () => {},

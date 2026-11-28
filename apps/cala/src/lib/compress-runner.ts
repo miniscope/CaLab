@@ -791,7 +791,8 @@ export class CompressRunner {
     const px = init.width * init.height;
     const list = [...this.done];
     let local: FactorExtractorLike | null = null;
-    const here = (): FactorExtractorLike => (local ??= makeExtractor(job.library, true, init.params));
+    const here = (): FactorExtractorLike =>
+      (local ??= makeExtractor(job.library, true, init.params));
     this.windowPool.setWidth(this.widths.extract ?? this.widths.after);
     const workers = Math.max(1, this.windowPool.width());
     this.windowPool.begin(job.id, job.library, true, px, init.params);

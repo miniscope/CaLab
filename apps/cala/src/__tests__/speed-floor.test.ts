@@ -344,10 +344,6 @@ describe('FloorTracker', () => {
 });
 
 describe('FloorMeter and floorText', () => {
-  it('keeps NEED_RATE equal to LOOKBACK.rate', () => {
-    expect(NEED_RATE).toBe(LOOKBACK.rate);
-  });
-
   it('measures from a stream of snapshots, freezes without a library, and prints the readout', () => {
     const m = new FloorMeter();
     expect(floorText(m)).toMatch(/not measured/);

@@ -7,11 +7,7 @@
 import { FlatFieldEstimator } from './cala-wasm.ts';
 import { paramsHandle } from './params-handle.ts';
 import { runParams } from './run-params.ts';
-import {
-  type FlatFieldChange,
-  type FlatFieldEvent,
-  type FlatFieldMap,
-} from './flat-field.ts';
+import { type FlatFieldChange, type FlatFieldEvent, type FlatFieldMap } from './flat-field.ts';
 import type { FramePixels } from './frame-source.ts';
 import { errMsg } from './errors.ts';
 

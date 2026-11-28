@@ -635,6 +635,8 @@ export function createPipelineStore(
       );
       if (gen !== generation) return;
       setPlan(p);
+      const run = runParams();
+      if (run) flatStore.setSchedule(run.engine.fps, run.engine.flat_field.first_frames);
       // The look-back workers build their motion corrector and trace engines from the run's params.
       if (lb) lookbackFeed!.params(session, p.params);
       // Joint run with the session fix: judge each boundary (observers only).

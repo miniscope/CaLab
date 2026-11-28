@@ -441,7 +441,7 @@ export class LookbackReader {
   }
 
   private runParams(): string {
-    if (this.params === null) throw new Error('look-back: the run\'s params have not arrived.');
+    if (this.params === null) throw new Error("look-back: the run's params have not arrived.");
     return this.params;
   }
 

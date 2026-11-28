@@ -51,7 +51,7 @@ function factorServer(f: FactorSource['factors']): FactorReader {
     solver: (bytes) => {
       const lib = TraceLibrary.fromBytes(bytes);
       try {
-        if (runParams === null) throw new Error('look-back: the run\'s params have not arrived.');
+        if (runParams === null) throw new Error("look-back: the run's params have not arrived.");
         const engine = new TraceEngine(lib, paramsHandle(runParams));
         return {
           cells: lib.ids().length,

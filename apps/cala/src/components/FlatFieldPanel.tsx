@@ -105,7 +105,7 @@ export function FlatFieldPanel(props: {
           </div>
         </div>
         <div class="cala-flat__text">
-          <Show when={badge().estimating}>
+          <Show when={badge().estimating && flatFieldFirstSeconds(state()) > 0}>
             <MeterRow
               label="First map"
               value={flatFieldSeconds(state())}

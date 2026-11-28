@@ -18,12 +18,7 @@
  * (buffers transferred, a small credit-based pool per link); the stages
  * themselves are transport-free, so Node tests chain them directly.
  */
-import {
-  MotionCorrector,
-  Preprocessor,
-  PreprocessWarmup,
-  SessionAligner,
-} from './cala-wasm.ts';
+import { MotionCorrector, Preprocessor, PreprocessWarmup, SessionAligner } from './cala-wasm.ts';
 import type { FastLoop } from './fast-loop.ts';
 import { type FlatFieldApplied, type FlatFieldMap, type FlatFieldSource } from './flat-field.ts';
 import type { FlatFieldSink } from './flat-field-runner.ts';
