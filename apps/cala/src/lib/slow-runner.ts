@@ -87,7 +87,7 @@ import type {
   VisitToOwner,
 } from '../workers/slow-types.ts';
 import { libraryViewTransferables, visitRateCounters } from '../workers/slow-types.ts';
-import { ApplyBarrier } from './apply-barrier.ts';
+import { APPLY_LAG_BATCHES, ApplyBarrier } from './apply-barrier.ts';
 import { DetLog, fnvBytes } from './detlog.ts';
 import { errMsg } from './errors.ts';
 import { BgSettleDriver, type BgSettleHost, type BgSettle } from './bg-settle-driver.ts';
@@ -505,6 +505,13 @@ export class SlowRunner {
   private lbSentAt: number[] = [];
   /** A repeatable run's visits and look-back requests out, and the answers held until due. */
   private bar = new ApplyBarrier<BarrierResult>();
+  /**
+   * A repeatable run's look-back requests out under the barrier, by id, and their timeouts'
+   * cancels. A worker gets one at every batch end, so up to `APPLY_LAG_BATCHES` are out on it at
+   * once (`lbReqs` holds the one request out on the arrival path).
+   */
+  private lbBar = new Map<number, LookbackReq>();
+  private lbBarTimers = new Map<number, () => void>();
   /** The last stream frame of the batch being observed (the barrier's clock). */
   private batchEnd = 0;
   /** A repeatable run: batch ends that waited for something late, and the wait, ms. */
@@ -900,10 +907,7 @@ export class SlowRunner {
    */
   private async barrierEnd(): Promise<void> {
     try {
-      for (const it of this.bar.removeKind('lookback')) {
-        const m = it.result;
-        if (m && m.type === 'frames') this.releaseFrames(m, it.key);
-      }
+      this.dropBarrierRequests();
       const t0 = this.now();
       if (!this.bar.ready(Infinity)) {
         this.barrierWaits++;
@@ -929,8 +933,9 @@ export class SlowRunner {
         continue;
       }
       const lm = m as LookbackToSlow;
-      const req = this.lbReqs[it.key];
-      if (req && req.id === it.id) this.lookbackAnswer(lm, it.key, req, loop);
+      const req = this.lbBar.get(it.id);
+      this.lbBar.delete(it.id);
+      if (req) this.lookbackAnswer(lm, it.key, req, loop);
       else if (lm.type === 'frames') this.releaseFrames(lm, it.key);
     }
   }
@@ -1310,18 +1315,29 @@ export class SlowRunner {
     bgs?.gov.update(this.epochNow(), this.version > 0);
     const pool = this.settlePorts();
     let sent = false;
-    if (this.lbPort && !this.lbReqs[0]) {
+    if (this.lbPort && this.lbRoom(0)) {
       // With a settle pool, worker 0 is need-driven only.
       if (pool.length > 0 || !bgs) sent = this.needRequest(loop);
       else sent = this.bgSettle.turnRequest(loop, bgs);
     }
     if (bgs)
       for (const i of pool) {
-        if (this.lbReqs[i]) continue;
+        if (!this.lbRoom(i)) continue;
         if (!this.bgSettle.bgSettleRequest(loop, bgs, i)) break;
         sent = true;
       }
     return sent;
+  }
+
+  /**
+   * Look-back worker `port` can take a request now: none out on it, or under the barrier fewer
+   * than `APPLY_LAG_BATCHES` (one goes out per batch end, and each is applied that many batches
+   * later, so the count depends on frames only).
+   */
+  private lbRoom(port: number): boolean {
+    let out = this.lbReqs[port] ? 1 : 0;
+    for (const q of this.lbBar.values()) if (q.port === port) out++;
+    return out < (this.barrierOn ? APPLY_LAG_BATCHES : 1);
   }
 
   /**
@@ -1339,6 +1355,8 @@ export class SlowRunner {
   ): void {
     const id = this.lbNextId++;
     const req: LookbackReq = { id, port, kind, items, ...(skip ? { skip } : {}) };
+    // Under the barrier a request may wait behind others, so it names the library to solve with.
+    const barrier = !hold && kind !== 'end' && this.barrierOn;
     this.det?.row('req', this.observed, id, port, kind, items.length, fnvBytes(flat));
     // `flat` is a fresh array (from WASM or built here): transferred as is; `skip` is copied.
     this.clock.span(kind, () =>
@@ -1353,14 +1371,31 @@ export class SlowRunner {
           // (Not on factors: they hold Discover's own preprocessed frames, see `relayed`.)
           ...(kind === 'end' && !this.factorLive ? { final: true } : {}),
           ...(hold ? { hold: true } : {}),
+          ...(barrier ? { version: this.version } : {}),
         },
         [flat.buffer as ArrayBuffer],
       ),
     );
     if (hold) this.lbHeld = req;
+    else if (barrier) this.awaitBarrier(req);
     else this.awaitAnswer(req);
-    if (!hold && kind !== 'end' && this.barrierOn)
-      this.bar.issue('lookback', port, this.batchEnd, id);
+  }
+
+  /** `req` went out under the barrier: held there until due, at most `LOOKBACK.timeoutMs`. */
+  private awaitBarrier(req: LookbackReq): void {
+    const { port, id } = req;
+    this.lbBar.set(id, req);
+    this.bar.issue('lookback', port, this.batchEnd, id);
+    this.lbSentAt[port] = this.epochNow();
+    this.lbBarTimers.set(
+      id,
+      this.timer(() => {
+        if (!this.lbBar.delete(id)) return;
+        this.lbBarTimers.delete(id);
+        this.bar.cancel('lookback', port, id);
+        this.timedOut(req);
+      }, LOOKBACK.timeoutMs),
+    );
   }
 
   /**
@@ -1395,17 +1430,20 @@ export class SlowRunner {
       if (failed?.id !== id) return;
       this.lbTimers[port] = null;
       this.lbReqs[port] = null;
-      // Not waited for at the barrier either (its late answer is ignored).
-      this.bar.cancel('lookback', port, id);
-      const why = `no answer within ${LOOKBACK.timeoutMs / 1000} s`;
-      // The settle's own request only turns the settle off; look-back and the Final settle go on.
-      if (failed.kind === 'csettle') this.bgSettle.bgSettleFailed(failed, why);
-      else if (failed.kind === 'end' && port > 0)
-        this.finalSettle.finalSettlePortFailed(failed, why);
-      else this.lookbackFailed(why);
-      if (this.finalSettle.state) this.finalSettle.settlePump();
-      else if (this.lookbackLive && !this.barrierOn) this.lookbackRequest();
+      this.timedOut(failed);
     }, LOOKBACK.timeoutMs);
+  }
+
+  /** `failed` got no answer in time (its late answer is ignored). */
+  private timedOut(failed: LookbackReq): void {
+    const why = `no answer within ${LOOKBACK.timeoutMs / 1000} s`;
+    // The settle's own request only turns the settle off; look-back and the Final settle go on.
+    if (failed.kind === 'csettle') this.bgSettle.bgSettleFailed(failed, why);
+    else if (failed.kind === 'end' && failed.port > 0)
+      this.finalSettle.finalSettlePortFailed(failed, why);
+    else this.lookbackFailed(why);
+    if (this.finalSettle.state) this.finalSettle.settlePump();
+    else if (this.lookbackLive && !this.barrierOn) this.lookbackRequest();
   }
 
   /**
@@ -1450,6 +1488,14 @@ export class SlowRunner {
       this.lbPortBusy[port] = (this.lbPortBusy[port] ?? 0) + busy;
       if (req?.kind === 'end') this.lbPortEndBusy[port] = (this.lbPortEndBusy[port] ?? 0) + busy;
     }
+    // A request out under the barrier: held until its batch end (`applyDue`).
+    const held = msg.session === this.session ? this.lbBar.get(msg.id) : undefined;
+    if (loop && held?.port === port) {
+      this.lbBarTimers.get(msg.id)?.();
+      this.lbBarTimers.delete(msg.id);
+      this.bar.arrive('lookback', port, msg, msg.id);
+      return;
+    }
     if (msg.session !== this.session || !loop || !req || msg.id !== req.id) {
       // Its time was spent all the same: counted apart (only this session's).
       if (msg.type === 'frames' && msg.session === this.session)
@@ -1460,19 +1506,17 @@ export class SlowRunner {
     }
     this.lbTimers[port]?.();
     this.lbTimers[port] = null;
-    // A repeatable run: held until its batch end (`applyDue`); the request stays the one out.
-    if (this.bar.arrive('lookback', port, msg, msg.id)) return;
     this.lookbackAnswer(msg, port, req, loop);
   }
 
-  /** An answer to the request out on `port` (`req`): fed to the slow loop, then the next request. */
+  /** An answer to `req`, out on `port`: fed to the slow loop, then the next request. */
   private lookbackAnswer(
     msg: LookbackToSlow,
     port: number,
     req: LookbackReq,
     loop: SlowLoopLike,
   ): void {
-    this.lbReqs[port] = null;
+    if (this.lbReqs[port]?.id === req.id) this.lbReqs[port] = null;
     this.det?.row(
       'ans',
       this.observed,
@@ -1591,11 +1635,7 @@ export class SlowRunner {
    */
   private cancelRequests(): void {
     this.dropHeld();
-    for (const it of this.bar.removeKind('lookback')) {
-      const m = it.result;
-      if (m && m.type === 'frames')
-        this.releaseFrames(m as Extract<LookbackToSlow, { type: 'frames' }>, it.key);
-    }
+    this.dropBarrierRequests();
     for (let i = 0; i < this.lbReqs.length; i++) {
       const req = this.lbReqs[i];
       if (!req) continue;
@@ -1605,6 +1645,23 @@ export class SlowRunner {
       this.lbTimers[i]?.();
       this.lbTimers[i] = null;
     }
+  }
+
+  /**
+   * The look-back requests out under the barrier stop being waited for (as `cancelRequests`):
+   * answers held give their buffers back, late ones are ignored on arrival.
+   */
+  private dropBarrierRequests(): void {
+    for (const it of this.bar.removeKind('lookback')) {
+      const m = it.result;
+      if (m && m.type === 'frames') this.releaseFrames(m, it.key);
+    }
+    for (const req of this.lbBar.values())
+      if (req.kind === 'csettle' && this.bgSettle.bgs)
+        this.bgSettle.bgs.dropped += req.items.length;
+    for (const cancel of this.lbBarTimers.values()) cancel();
+    this.lbBar.clear();
+    this.lbBarTimers.clear();
   }
 
   /** The user's "Stop settling": publish the final library at once, with what was refined. */
@@ -1983,6 +2040,9 @@ export class SlowRunner {
     this.askTimer?.();
     this.askTimer = null;
     this.lbReqs = [];
+    for (const cancel of this.lbBarTimers.values()) cancel();
+    this.lbBar.clear();
+    this.lbBarTimers.clear();
     // (The look-back worker's run is reset too, which lets a held request go.)
     this.lbHeld = null;
     this.lbPortOff = [];

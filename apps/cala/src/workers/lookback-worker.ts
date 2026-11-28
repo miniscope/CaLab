@@ -34,6 +34,8 @@ const workerScope = globalThis as unknown as {
 /**
  * Frame buffers per worker: the answer the slow worker holds, the request
  * being served, and (worker 0, the end settle) the next one prepared ahead.
+ * A repeatable run holds up to `APPLY_LAG_BATCHES - 1` answers while the next
+ * is served (each is given back before the next request goes out), so two do.
  */
 const BUFFERS = { pool: 2, worker0: 3 };
 

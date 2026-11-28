@@ -11,8 +11,9 @@ import { PACE_BATCH } from './frame-pacer.ts';
 
 /**
  * Batches between hand-out and apply. One visit slot then makes at most one visit per this many
- * batches, so `slots / (APPLY_LAG_BATCHES * PACE_BATCH)` visits per frame; and need-driven
- * look-back reads at most one request (`LOOKBACK.takeMax` frames) per this many batches.
+ * batches, so `slots / (APPLY_LAG_BATCHES * PACE_BATCH)` visits per frame. A look-back worker gets
+ * a request at every batch end, so this many are out on it at once (and it needs that many frame
+ * buffers); it reads up to `LOOKBACK.takeMax` frames per batch.
  */
 export const APPLY_LAG_BATCHES = 2;
 

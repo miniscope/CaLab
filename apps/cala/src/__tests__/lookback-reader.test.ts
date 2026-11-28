@@ -163,7 +163,17 @@ describe('LookbackReader', () => {
     expect(Array.from(solved.traces)).toEqual(Array.from(served.traces));
     expect(Array.from(solved.background ?? [])).toEqual(Array.from(served.background ?? []));
     expect(served.traces.some((v) => v !== 0)).toBe(true);
-    for (const o of [one, two]) {
+    // A request that names its library (a repeatable run): a newer one in hand waits for a later request.
+    const three = await open();
+    three.reader.setLibrary(a.version, a.bytes);
+    three.reader.setLibrary(b.version, b.bytes);
+    three.reader.applyLibrary(a.version);
+    const pinned = three.reader.solve(await three.reader.prepare(frames, new Float32Array(3 * px)));
+    expect(pinned.cells).toBe(1);
+    three.reader.applyLibrary(b.version);
+    const next = three.reader.solve(await three.reader.prepare(frames, new Float32Array(3 * px)));
+    expect(next.cells).toBe(2);
+    for (const o of [one, two, three]) {
       o.reader.dispose();
       o.src.dispose();
     }

@@ -101,6 +101,13 @@ function emptyTiming(): LookbackTiming {
 /** Block seqs at or below this belong to the settle during Discover (`-(1e6 + k)`); the end settle's are above. */
 const SETTLE_BLOCK_MAX = -1_000_000;
 
+/**
+ * Libraries kept in hand before they are applied. A repeatable run's request names the version
+ * it is solved with and waits behind at most `APPLY_LAG_BATCHES - 1` others, a batch apart, so a
+ * few are enough.
+ */
+const PENDING_LIBRARIES_MAX = 8;
+
 /** Raw frames read at once around a requested one (the scheduler serves 64-frame blocks forward). */
 export const LOOKBACK_READ_SPAN = 64;
 
@@ -169,7 +176,8 @@ export class LookbackReader {
   private engine: TraceEngine | null = null;
   private version = 0;
   private cells = 0;
-  private pendingLibrary: { version: number; bytes: Uint8Array } | null = null;
+  /** Libraries not applied yet, oldest first (`applyLibrary` may stop at a version before the newest). */
+  private pendingLibraries: { version: number; bytes: Uint8Array }[] = [];
   private raw: FramePixels;
   private rawStart = 0;
   private rawCount = 0;
@@ -257,8 +265,10 @@ export class LookbackReader {
 
   /** A library the slow loop published (applied before the next solve). */
   setLibrary(version: number, bytes: Uint8Array): void {
-    if (version > this.version && version > (this.pendingLibrary?.version ?? 0))
-      this.pendingLibrary = { version, bytes };
+    if (version <= (this.pendingLibraries.at(-1)?.version ?? this.version)) return;
+    this.pendingLibraries.push({ version, bytes });
+    // A worker asked nothing for a while: only the newest few can still be named by a request.
+    if (this.pendingLibraries.length > PENDING_LIBRARIES_MAX) this.pendingLibraries.shift();
   }
 
   /**
@@ -456,11 +466,15 @@ export class LookbackReader {
     return this.raw.subarray(o, o + this.px);
   }
 
-  /** Make the newest library in hand (`setLibrary`) the one the next `solve` uses. */
-  applyLibrary(): void {
-    const p = this.pendingLibrary;
+  /**
+   * Make the newest library in hand (`setLibrary`) the one the next `solve` uses, or with `upTo`
+   * the newest up to that version (a newer one stays in hand for a later request).
+   */
+  applyLibrary(upTo = Infinity): void {
+    let p: { version: number; bytes: Uint8Array } | undefined;
+    while (this.pendingLibraries.length > 0 && this.pendingLibraries[0].version <= upTo)
+      p = this.pendingLibraries.shift();
     if (!p) return;
-    this.pendingLibrary = null;
     const lib = TraceLibrary.fromBytes(p.bytes);
     try {
       if (this.engine) this.engine.setLibrary(lib);
@@ -490,6 +504,6 @@ export class LookbackReader {
     this.motion = null;
     this.engine?.free();
     this.engine = null;
-    this.pendingLibrary = null;
+    this.pendingLibraries = [];
   }
 }

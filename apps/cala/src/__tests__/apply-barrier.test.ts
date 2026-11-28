@@ -122,6 +122,9 @@ function setup(o: { repeatable?: boolean; pace?: number; lookback?: boolean } = 
   });
   const sentVisits: { slot: number; bytes: Uint8Array }[] = [];
   const sentLb: Extract<SlowToLookback, { type: 'request' }>[] = [];
+  const released: number[] = [];
+  /** Timeouts started (look-back requests), fired by the test. */
+  const timers: { fn: () => void; cancelled: boolean }[] = [];
   const toFast: SlowToFast[] = [];
   const toMain: SlowToMain[] = [];
   const visits = [0, 1].map((slot) => ({
@@ -137,12 +140,19 @@ function setup(o: { repeatable?: boolean; pace?: number; lookback?: boolean } = 
     lookback: {
       postMessage: (m) => {
         if (m.type === 'request') sentLb.push(m);
+        if (m.type === 'release') released.push(m.frames.length);
       },
     },
     now: () => 0,
     epochNow: () => 0,
     defer: (fn) => fn(),
-    timer: () => () => {},
+    timer: (fn) => {
+      const t = { fn, cancelled: false };
+      timers.push(t);
+      return () => {
+        t.cancelled = true;
+      };
+    },
   });
   r.setPace(o.pace ?? 60, false);
   r.handle({
@@ -177,7 +187,7 @@ function setup(o: { repeatable?: boolean; pace?: number; lookback?: boolean } = 
     if (order === 'reverse') answers.reverse();
     for (const a of answers) a();
   }
-  return { r, calls, toFast, toMain, deliver, sentVisits, sentLb };
+  return { r, calls, toFast, toMain, deliver, sentVisits, sentLb, released, timers };
 }
 
 const pause = () => Promise.resolve();
@@ -227,8 +237,8 @@ describe('SlowRunner apply barrier', () => {
     await t.r.handleAsync(frames(56), pause);
     expect(APPLY_LAG_FRAMES).toBe(16);
     expect(t.calls.some((c) => c.startsWith('a') || c.startsWith('l'))).toBe(false);
-    // No new hand-out while both slots are out, and no second look-back request.
-    expect(t.calls.filter((c) => c === 'k')).toHaveLength(1);
+    // No new hand-out while both slots are out; a look-back request at every batch end.
+    expect(t.calls.filter((c) => c === 'k')).toHaveLength(2);
     await t.r.handleAsync(frames(64), pause);
     const i = t.calls.lastIndexOf('o71');
     expect(t.calls.slice(i + 1, i + 6)).toEqual(['a1', 'a2', 'l2', 'p1', 't3']);
@@ -326,6 +336,94 @@ describe('SlowRunner apply barrier', () => {
       expect(b.calls).not.toEqual(a.calls);
       expect(a.toFast.some((m) => m.type === 'library' && m.frame !== undefined)).toBe(false);
     }
+  });
+});
+
+describe('SlowRunner apply barrier: look-back requests', () => {
+  /** A look-back answer to `req` (frames of `n` pixels each). */
+  function answer(req: Extract<SlowToLookback, { type: 'request' }>): LookbackToSlow {
+    const n = req.items.length / 4;
+    return {
+      type: 'frames',
+      session: 1,
+      id: req.id,
+      version: 1,
+      count: n,
+      cells: 0,
+      frames: new Float32Array(2 * n),
+      traces: new Float32Array(0),
+    };
+  }
+
+  it('sends one at every batch end, naming the library, and applies them in order', async () => {
+    const t = setup({ lookback: true });
+    await t.r.handleAsync(frames(48), pause);
+    await t.r.handleAsync(frames(56), pause);
+    const [a, b] = t.sentLb.splice(0);
+    expect([a.id, b.id]).toEqual([1, 2]);
+    // The library each was taken with (none published yet).
+    expect([a.version, b.version]).toEqual([0, 0]);
+    // Answered in reverse order: still applied one per batch end, in request order.
+    t.r.handleLookback(answer(b), 0);
+    t.r.handleLookback(answer(a), 0);
+    const seen = () => t.calls.filter((c) => c.startsWith('l'));
+    expect(seen()).toEqual([]);
+    t.deliver('sent');
+    await t.r.handleAsync(frames(64), pause);
+    expect(seen()).toEqual(['l2']);
+    expect(t.released).toHaveLength(1);
+    const sent = t.sentLb.splice(0);
+    t.deliver('sent');
+    t.sentLb.push(...sent);
+    await t.r.handleAsync(frames(72), pause);
+    expect(seen()).toEqual(['l2', 'l2']);
+    expect(t.released).toHaveLength(2);
+    // Two out on the worker again (the ones sent at 64 and 72, after library 1 at 64).
+    expect(t.sentLb.map((q) => [q.id, q.version])).toEqual([
+      [3, 1],
+      [4, 1],
+    ]);
+  });
+
+  it('a timed-out request is not waited for; the other one out is still applied', async () => {
+    const t = setup({ lookback: true });
+    await t.r.handleAsync(frames(48), pause);
+    await t.r.handleAsync(frames(56), pause);
+    const [a, b] = t.sentLb.splice(0);
+    t.deliver('sent');
+    // The first request's timeout fires before its answer comes; the second is answered.
+    t.timers[0].fn();
+    t.r.handleLookback(answer(b), 0);
+    // Its late answer is ignored, and its buffer goes back.
+    t.r.handleLookback(answer(a), 0);
+    expect(t.released).toHaveLength(1);
+    await t.r.handleAsync(frames(64), pause);
+    await t.r.handleAsync(frames(72), pause);
+    expect(t.calls.filter((c) => c.startsWith('l'))).toEqual(['l2']);
+    const status = t.toMain.filter((m) => m.type === 'status').at(-1);
+    expect(status?.type === 'status' && status.status.lookback?.error).toMatch(/no answer/);
+  });
+
+  it("at Discover's end drops the answers held and gives their buffers back", async () => {
+    const t = setup({ lookback: true });
+    await t.r.handleAsync(frames(48), pause);
+    await t.r.handleAsync(frames(56), pause);
+    const [a, b] = t.sentLb.splice(0);
+    t.r.handleLookback(answer(a), 0);
+    t.deliver('sent');
+    const end = t.r.handleAsync({ type: 'end', session: 1 }, pause);
+    await tick();
+    // (Only the visits: the Final settle's requests are not this test's.)
+    t.sentLb.splice(0);
+    t.deliver('sent');
+    await end;
+    // `a` held: dropped and given back; `b` comes after the end: ignored, given back too.
+    expect(t.released).toHaveLength(1);
+    t.r.handleLookback(answer(b), 0);
+    expect(t.released).toHaveLength(2);
+    expect(t.calls.filter((c) => c.startsWith('l'))).toEqual([]);
+    // Neither timeout is still running.
+    expect(t.timers.slice(0, 2).every((x) => x.cancelled)).toBe(true);
   });
 });
 
