@@ -216,7 +216,7 @@ fn monitor() -> QcMonitor {
         refresh_frames: 10,
         residual_every: 2,
         block_px: 4,
-        ..QcConfig::default()
+        ..QcConfig::for_fps(20.0)
     };
     QcMonitor::new(dims(), vec![1; W * H], vec![1.0; W * H], cfg).unwrap()
 }
@@ -366,7 +366,7 @@ fn bad_inputs_are_errors() {
     assert!(qc.set_noise(vec![f32::NAN; W * H]).is_err());
     let cfg = QcConfig {
         window_frames: 4,
-        ..QcConfig::default()
+        ..QcConfig::for_fps(20.0)
     };
     assert!(QcMonitor::new(dims(), vec![1; W * H], vec![1.0; W * H], cfg).is_err());
 }
@@ -387,7 +387,7 @@ fn stability_compares_old_cells_with_their_earlier_state() {
         block_px: 4,
         stability_lag_s: 5.0,
         stable_min_age_s: 10.0,
-        ..QcConfig::default()
+        ..QcConfig::for_fps(20.0)
     };
     let mut qc = QcMonitor::new(dims(), vec![1; W * H], vec![1.0; W * H], cfg).unwrap();
     let mut rng = Lcg(9);
@@ -447,11 +447,10 @@ fn motion_r2_is_reported_with_shifts_and_does_not_change_pass() {
 }
 
 #[test]
-fn default_config_is_the_20_hz_durations() {
+fn the_20_hz_config_has_the_validated_durations() {
     // Identity: the durations reproduce the frame counts the QC was
     // validated with at 20 Hz.
-    let d = QcConfig::default();
-    assert_eq!(d, QcConfig::for_fps(20.0));
+    let d = QcConfig::for_fps(20.0);
     assert_eq!(d.fps, 20.0);
     assert_eq!(d.window_frames, 1200);
     assert_eq!(d.refresh_frames, 100);
@@ -518,7 +517,7 @@ fn a_quiet_last_window_reads_low_while_the_session_does_not() {
     // The QC window is the last minute: a clean cell that fired early and
     // is quiet at the end of the recording fails on its window, and passes
     // on its whole session.
-    let cfg = QcConfig::default();
+    let cfg = QcConfig::for_fps(20.0);
     let mut rng = Lcg(11);
     let n = 6000;
     let mut x: Vec<f32> = calcium(n, 150, 12.0, 12.0, 10)

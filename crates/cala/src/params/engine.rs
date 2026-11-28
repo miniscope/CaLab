@@ -28,6 +28,7 @@ use crate::preprocess::flatfield::OnlineFlatFieldConfig;
 use crate::preprocess::flatten::{FlattenConfig, SIGMA_PER_DIAMETER};
 use crate::preprocess::flicker::FlickerMode;
 use crate::preprocess::lines::LineMode;
+use crate::preprocess::noise::NoiseEstimator;
 use crate::preprocess::PreprocessConfig;
 use crate::qc::QcConfig;
 use crate::trace::{BackgroundModel as EBackground, SolverConfig};
@@ -130,6 +131,9 @@ fn preprocess(p: &CalaParams, v: &EngineView, fps: f32) -> PreprocessConfig {
     c.hot.k_sigma = pv.hot_pixel_k_sigma as f32;
     c.background.boxcar = pv.background_boxcar as usize;
     c.background.relax_frames = pv.background_relax_frames as f32;
+    c.noise.estimator = NoiseEstimator::MedianTracker {
+        eta: pv.noise_eta as f32,
+    };
     c.flatten = flatten(p, v);
     c
 }
@@ -140,9 +144,13 @@ fn motion(v: &EngineView) -> MotionConfig {
         max_shift: m.max_shift as f32,
         template_tau: m.template_tau as f32,
         template_refresh: m.template_refresh as usize,
+        stats_rate: m.stats_rate as f32,
+        weight_rate: m.weight_rate as f32,
         nonrigid: m.nonrigid.as_ref().map(|n| NonRigidConfig {
             grid: (n.grid[0] as usize, n.grid[1] as usize),
             max_patch_shift: n.max_patch_shift as f32,
+            temporal_alpha: n.temporal_alpha as f32,
+            shrink_rate: n.shrink_rate as f32,
             ..NonRigidConfig::default()
         }),
         ..MotionConfig::default()
@@ -176,6 +184,9 @@ fn slow_loop(v: &EngineView, fp: &[u8; 32]) -> SlowLoopConfig {
         commit_interval_frames: u64::from(s.commit_interval_frames),
         reject_cooldown_frames: s.reject_cooldown_frames,
         event_frames: s.event_frames as u32,
+        ledger_base_rate: s.ledger_base_rate as f32,
+        ledger_scale_rate: s.ledger_scale_rate as f32,
+        ledger_max_freeze_frames: s.ledger_max_freeze_frames as u32,
         probation_frames: s.probation_frames,
         probe_gap_frames: s.probe_gap_frames,
         stats_half_life_frames: s.stats_half_life_frames as f32,

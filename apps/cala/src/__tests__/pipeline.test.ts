@@ -1067,6 +1067,7 @@ describe('pipeline store: the Discover visit hold', () => {
         onStatus: (cb: (st: never) => void) => statusCbs.push(cb),
         reset: () => {},
         fps: () => 20,
+        setFps: () => {},
       };
       const store = createPipelineStore(
         { ...client, setPace },
@@ -1142,6 +1143,7 @@ describe('pipeline store: the Discover visit hold', () => {
         onStatus: (cb: (st: never) => void) => statusCbs.push(cb),
         reset: () => {},
         fps: () => 20,
+        setFps: () => {},
       };
       const store = createPipelineStore(
         { ...client, setPace: vi.fn(async () => {}) },
@@ -1188,6 +1190,7 @@ describe('pipeline store: the Discover visit hold', () => {
           onStatus: (cb: (st: never) => void) => statusCbs.push(cb),
           reset: () => {},
           fps: () => 20,
+          setFps: () => {},
         };
         const store = createPipelineStore(
           { ...client, setPace: vi.fn(async () => {}) },

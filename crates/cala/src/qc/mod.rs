@@ -176,17 +176,6 @@ pub mod durations {
     pub const MOTION_MIN_FOLD_S: f32 = 5.0;
 }
 
-/// The frame rate [`QcConfig::default`] assumes (the rate the settings were
-/// validated at). Callers that know the recording's rate use
-/// [`QcConfig::for_fps`].
-pub const DEFAULT_FPS: f32 = 20.0;
-
-impl Default for QcConfig {
-    fn default() -> QcConfig {
-        QcConfig::for_fps(DEFAULT_FPS)
-    }
-}
-
 impl QcConfig {
     /// The default settings at frame rate `fps` (Hz): every duration in
     /// [`durations`] becomes `round(seconds · fps)` frames. Settings that are

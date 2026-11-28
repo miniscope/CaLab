@@ -20,9 +20,10 @@
 //!   Its fixed point is exactly the median, so it is robust to transients
 //!   like the batch estimator. With multiplicative steps it is scale-free;
 //!   for half-normal |Δy| its relative spread is ≈ 0.76·√η and its time
-//!   constant ≈ 1.2/η frames. Default η = 0.002: ±3.4 % per pixel, adapting
-//!   over ~600 frames (30 s at 20 fps), slow enough to be steady and fast
-//!   enough to follow bleaching and brightness steps. It starts from the
+//!   constant ≈ 1.2/η frames. η = 1 / ([`TRACKER_STEP_S`] × fps)
+//!   ([`NoiseConfig::for_fps`]), so the time constant is ~30 s at any frame
+//!   rate: slow enough to be steady and fast enough to follow bleaching and
+//!   brightness steps (±3.4 % per pixel at 20 fps, less at higher rates). It starts from the
 //!   mean-absolute-difference estimate of the first `init_frames` differences
 //!   (converted to a median by the Gaussian ratio), so it is usable after a
 //!   second instead of after its time constant. Before that, the running mean
@@ -104,6 +105,22 @@ pub struct NoiseConfig {
     pub init_frames: u32,
     /// Dither the differences seen by the median tracker (see the module docs).
     pub dither: bool,
+}
+
+/// Step horizon of the median tracker, s: η = 1 / (this × fps), a time
+/// constant of ≈ 1.2 × this.
+pub const TRACKER_STEP_S: f32 = 25.0;
+
+impl NoiseConfig {
+    /// The defaults with the median tracker's step at `fps` (positive, Hz).
+    pub fn for_fps(fps: f32) -> NoiseConfig {
+        NoiseConfig {
+            estimator: NoiseEstimator::MedianTracker {
+                eta: crate::params::resolve::per_frame_rate(TRACKER_STEP_S, fps),
+            },
+            ..NoiseConfig::default()
+        }
+    }
 }
 
 impl Default for NoiseConfig {

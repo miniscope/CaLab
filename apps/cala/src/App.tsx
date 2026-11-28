@@ -494,7 +494,12 @@ const App: Component = () => {
       },
     ),
   );
-  createEffect(() => cells.setFps(store.info()?.fps ?? FALLBACK_PLAYBACK_FPS));
+  /** The run's frame rate (the recording's, or the override); null before either is known. */
+  const runFps = (): number | null => pipeline.runParams()?.engine.fps ?? store.info()?.fps ?? null;
+  createEffect(() => {
+    const f = runFps();
+    if (f !== null) cells.setFps(f);
+  });
   // Recording read, final library out, every window compressed: solve the
   // traces of the whole recording again from the factors, with that library.
   createEffect(() => {
@@ -1299,7 +1304,7 @@ const App: Component = () => {
         cells={cells}
         width={lp.info.width}
         height={lp.info.height}
-        fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
+        fps={runFps() ?? FALLBACK_PLAYBACK_FPS}
       />
     );
     /* eslint-disable solid/reactivity -- built once per opened recording */
@@ -1357,7 +1362,7 @@ const App: Component = () => {
             boundaries={boundaries()}
             boundaryFlags={pipeline.boundaryFlags()}
             displayedFrame={pipeline.displayedFrame}
-            fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
+            fps={runFps() ?? FALLBACK_PLAYBACK_FPS}
           />
         ),
       },
@@ -1430,7 +1435,7 @@ const App: Component = () => {
                 label={store.label()}
                 width={lp.info.width}
                 height={lp.info.height}
-                fps={lp.info.fps ?? 0}
+                fps={runFps() ?? 0}
                 bitDepth={lp.info.bitDepth}
                 runFile={exportRunFile}
               />

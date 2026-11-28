@@ -27,7 +27,7 @@ fn view(fps: f64) -> EngineView {
     resolve(
         &CalaParams::default(),
         Context {
-            fps,
+            fps: Some(fps),
             frame: resolve::GOLDEN_FRAME,
         },
     )
@@ -349,7 +349,7 @@ fn the_diameter_follows_the_optics_when_pixels_are_not_set() {
     p.optics.magnification = Some(2.2);
     p.optics.sensor_width_px = Some(1200);
     let ctx = Context {
-        fps: 20.0,
+        fps: Some(20.0),
         frame: [600, 600],
     };
     // Binning 2 from the sensor and frame widths: 2 µm per frame pixel.
@@ -376,32 +376,141 @@ fn an_invalid_frame_rate_is_an_error() {
     let mut p = CalaParams::default();
     p.time.fps_override = Some(0.0);
     let ctx = Context {
-        fps: 20.0,
+        fps: Some(20.0),
         frame: [64, 64],
     };
     assert_eq!(resolve(&p, ctx).unwrap_err().pointer, "/time/fps_override");
 }
 
-/// At 30 fps the durations converted at the recording's rate move; those
-/// converted at `time.legacy_frame_fps` keep their 20 fps frame counts.
+/// A recording without a frame rate is an error unless the override is
+/// set; the override wins over the file's rate.
 #[test]
-fn the_two_groups_of_durations_at_30_fps() {
-    let (a, b) = (view(20.0), view(30.0));
-    assert_eq!(b.flat_field.first_frames, a.flat_field.first_frames * 3 / 2);
-    assert_eq!(b.preprocess.background_relax_frames, 3600.0);
-    assert_eq!(b.slow_loop.probation_frames, a.slow_loop.probation_frames);
-    assert_eq!(b.lookback.max_frames, 3000);
+fn a_missing_frame_rate_is_an_error_until_overridden() {
     let mut p = CalaParams::default();
-    p.time.legacy_frame_fps = None;
-    let c = resolve(
+    let ctx = Context {
+        fps: None,
+        frame: [64, 64],
+    };
+    let e = resolve(&p, ctx).unwrap_err();
+    assert_eq!(e.pointer, "/time/fps_override");
+    assert!(e.message.contains("no frame rate"), "{}", e.message);
+    p.time.fps_override = Some(30.0);
+    assert_eq!(resolve(&p, ctx).unwrap().fps, 30.0);
+    let file = Context {
+        fps: Some(20.0),
+        ..ctx
+    };
+    assert_eq!(resolve(&p, file).unwrap().fps, 30.0);
+}
+
+/// Every duration converts at the recording's frame rate, and every
+/// per-frame rate follows its time constant.
+#[test]
+fn durations_and_rates_follow_the_frame_rate() {
+    for fps in [10.0, 20.0, 30.0, 60.0] {
+        let v = view(fps);
+        let k = fps / 20.0;
+        let at = |frames20: f64| (frames20 * k).round() as u64;
+        assert_eq!(v.preprocess.warmup_frames, at(200.0), "{fps}");
+        assert_eq!(v.preprocess.background_boxcar, at(5.0), "{fps}");
+        assert_eq!(v.motion.template_tau, at(400.0) as f64, "{fps}");
+        assert_eq!(v.motion.template_refresh, at(20.0), "{fps}");
+        assert_eq!(v.motion.warmup_frames, at(200.0), "{fps}");
+        let s = &v.slow_loop;
+        assert_eq!(s.event_half_life_frames, at(2000.0), "{fps}");
+        assert_eq!(s.reject_cooldown_frames, at(400.0), "{fps}");
+        assert_eq!(s.probation_frames, at(4800.0), "{fps}");
+        assert_eq!(s.probe_gap_frames, at(100.0), "{fps}");
+        assert_eq!(s.stats_half_life_frames, at(6000.0), "{fps}");
+        assert_eq!(s.reservoir_refine_frames, at(2400.0), "{fps}");
+        assert_eq!(s.churn_readd_window_frames, at(4800.0), "{fps}");
+        assert_eq!(s.churn_frames, at(2400.0), "{fps}");
+        assert_eq!(s.ledger_max_freeze_frames, at(100.0), "{fps}");
+        assert_eq!(v.lookback.max_frames, at(3000.0), "{fps}");
+        assert_eq!(v.settle.final_max_frames, at(18000.0), "{fps}");
+        assert_eq!(v.factors.window_frames, at(600.0), "{fps}");
+        // A schedule, not a duration.
+        assert_eq!(s.commit_interval_frames, 100, "{fps}");
+        // Rates: per frame, inversely proportional to the frame rate.
+        let r = |rate20: f64| (rate20 / k) as f32;
+        assert_eq!(v.preprocess.noise_eta as f32, r(0.002), "{fps}");
+        assert_eq!(v.motion.stats_rate as f32, r(0.02), "{fps}");
+        assert_eq!(v.motion.weight_rate as f32, r(0.001), "{fps}");
+        assert_eq!(s.ledger_base_rate as f32, r(0.02), "{fps}");
+        assert_eq!(s.ledger_scale_rate as f32, r(0.01), "{fps}");
+    }
+    // The shortest event: 0.15 s, never fewer than 3 frames.
+    let ev = |fps| view(fps).slow_loop.event_frames;
+    assert_eq!([ev(10.0), ev(20.0), ev(40.0), ev(60.0)], [3, 3, 6, 9]);
+    // The non-rigid smoother keeps a 50 ms half-life.
+    let mut p = CalaParams::default();
+    p.motion.nonrigid.enabled = true;
+    for (fps, alpha) in [(20.0, 0.5f32), (10.0, 0.75)] {
+        let v = resolve(
+            &p,
+            Context {
+                fps: Some(fps),
+                frame: [600, 600],
+            },
+        )
+        .unwrap();
+        let nr = v.motion.nonrigid.unwrap();
+        assert_eq!(nr.temporal_alpha as f32, alpha, "{fps}");
+        assert_eq!(nr.shrink_rate as f32, (0.05 * 20.0 / fps) as f32, "{fps}");
+    }
+}
+
+/// At 20 fps every per-frame rate is bit for bit the engine's own constant
+/// (`frames_f32` and the rates are f32 expressions; 20 fps must not move a
+/// single bit).
+#[test]
+fn rates_at_20_fps_are_the_engines_constants() {
+    use crate::discover::SlowLoopConfig;
+    use crate::motion::{MotionConfig, NonRigidConfig};
+    use crate::preprocess::noise::{NoiseConfig, NoiseEstimator};
+    let bits = |x: f64| (x as f32).to_bits();
+    let mut p = CalaParams::default();
+    p.motion.nonrigid.enabled = true;
+    let v = resolve(
         &p,
         Context {
-            fps: 30.0,
-            frame: resolve::GOLDEN_FRAME,
+            fps: Some(20.0),
+            frame: [600, 600],
         },
     )
     .unwrap();
-    assert_eq!(c.lookback.max_frames, 4500);
+    let NoiseEstimator::MedianTracker { eta } = NoiseConfig::default().estimator else {
+        panic!("the default noise estimator is the median tracker");
+    };
+    assert_eq!(bits(v.preprocess.noise_eta), eta.to_bits());
+    assert_eq!(eta, 0.002);
+    let (m, nr) = (MotionConfig::default(), NonRigidConfig::default());
+    assert_eq!(bits(v.motion.stats_rate), m.stats_rate.to_bits());
+    assert_eq!(bits(v.motion.weight_rate), m.weight_rate.to_bits());
+    let nv = v.motion.nonrigid.unwrap();
+    assert_eq!(bits(nv.temporal_alpha), nr.temporal_alpha.to_bits());
+    assert_eq!(bits(nv.shrink_rate), nr.shrink_rate.to_bits());
+    let s = SlowLoopConfig::default();
+    assert_eq!(
+        bits(v.slow_loop.ledger_base_rate),
+        s.ledger_base_rate.to_bits()
+    );
+    assert_eq!(
+        bits(v.slow_loop.ledger_scale_rate),
+        s.ledger_scale_rate.to_bits()
+    );
+    assert_eq!(
+        v.slow_loop.ledger_max_freeze_frames,
+        u64::from(s.ledger_max_freeze_frames)
+    );
+    // The ledger's scale steps were literals 1.01 and 0.99.
+    let r = v.slow_loop.ledger_scale_rate as f32;
+    assert_eq!((1.0 + r).to_bits(), 1.01f32.to_bits());
+    assert_eq!((1.0 - r).to_bits(), 0.99f32.to_bits());
+    // And the constants the defaults hold are the literals they replaced.
+    assert_eq!(m.stats_rate, 0.02);
+    assert_eq!(nr.shrink_rate, 0.05);
+    assert_eq!(nr.temporal_alpha, 0.5);
 }
 
 // ---- parity with the engine ----
@@ -424,7 +533,9 @@ fn defaults_resolve_to_the_engines_values() {
     use crate::qc::QcConfig;
     use crate::trace::{BackgroundModel as EBg, SolverConfig};
 
-    for fps in [20.0f32, 30.0] {
+    {
+        // At 20 fps, the rate the engine's frame counts were tuned at.
+        let fps = 20.0f32;
         let v = view(f64::from(fps));
         // The engine holds f32: each value converts to the engine's exactly.
 
@@ -469,7 +580,7 @@ fn defaults_resolve_to_the_engines_values() {
         let on = resolve(
             &p,
             Context {
-                fps: f64::from(fps),
+                fps: Some(f64::from(fps)),
                 frame: [600, 600],
             },
         )
@@ -573,23 +684,23 @@ fn defaults_resolve_to_the_engines_values() {
 
 // ---- engine configs built from params ----
 
-/// Frame rates the builders are checked at: integer and non-integer, and
-/// one where the two groups of durations differ.
+/// Frame rates the builders are checked at: integer and non-integer.
 const BUILD_FPS: [f32; 6] = [19.98, 20.0, 23.976, 29.97, 30.0, 60.0];
 
 fn engine_at(p: &CalaParams, fps: f32) -> super::engine::Engine {
     super::engine::Engine::build(
         p,
         Context {
-            fps: f64::from(fps),
+            fps: Some(f64::from(fps)),
             frame: [600, 600],
         },
     )
     .unwrap()
 }
 
-/// The engine's own configuration, as params, builds exactly the configs
-/// the engine's `Default` and `for_fps` give, at any frame rate.
+/// The engine's own configuration, as params, builds at 20 fps exactly the
+/// configs the engine's `Default` and `for_fps` give; at any frame rate,
+/// the durations the engine has always converted (`for_fps`) match.
 #[test]
 fn engine_params_build_the_engines_configs() {
     use super::loose::engine_params;
@@ -602,42 +713,49 @@ fn engine_params_build_the_engines_configs() {
 
     for fps in BUILD_FPS {
         let e = engine_at(&engine_params(), fps);
-        assert_eq!(e.preprocess, PreprocessConfig::for_fps(fps), "{fps}");
+        let pre = PreprocessConfig::for_fps(fps);
+        assert_eq!(
+            e.preprocess.background.relax_frames,
+            pre.background.relax_frames
+        );
+        assert_eq!(e.preprocess.flicker, pre.flicker, "{fps}");
+        assert_eq!(e.preprocess.noise, pre.noise, "{fps}");
         assert_eq!(e.flat_field, OnlineFlatFieldConfig::for_fps(fps), "{fps}");
         assert_eq!(e.qc, QcConfig::for_fps(fps), "{fps}");
-        assert_eq!(e.qc_at(20.0), QcConfig::default());
-        assert_eq!(e.motion, MotionConfig::default());
-        assert_eq!(e.motion_warmup_frames, 200);
         assert_eq!(e.solver, SolverConfig::default());
         assert_eq!(e.visit, VisitSchedule::fixed());
         assert!(e.lookback.is_none());
         assert_ne!(e.slow_loop.fingerprint, 0);
-        assert_eq!(
-            e.slow_loop,
-            SlowLoopConfig {
-                fingerprint: e.slow_loop.fingerprint,
-                ..SlowLoopConfig::default()
-            },
-            "{fps}"
-        );
-        let mut p = engine_params();
-        p.motion.nonrigid.enabled = true;
-        p.lookback.enabled = true;
-        let e = engine_at(&p, fps);
-        assert_eq!(
-            e.motion,
-            MotionConfig {
-                nonrigid: Some(NonRigidConfig::default()),
-                ..MotionConfig::default()
-            }
-        );
-        let lb = e.lookback.unwrap();
-        let d = LookbackConfig::default();
-        assert_eq!(
-            (lb.rate, lb.max_frames, lb.order, lb.target),
-            (d.rate, d.max_frames, d.order, d.target)
-        );
     }
+    let e = engine_at(&engine_params(), 20.0);
+    assert_eq!(e.preprocess, PreprocessConfig::for_fps(20.0));
+    assert_eq!(e.qc_at(20.0), QcConfig::for_fps(20.0));
+    assert_eq!(e.motion, MotionConfig::default());
+    assert_eq!(e.motion_warmup_frames, 200);
+    assert_eq!(
+        e.slow_loop,
+        SlowLoopConfig {
+            fingerprint: e.slow_loop.fingerprint,
+            ..SlowLoopConfig::default()
+        }
+    );
+    let mut p = engine_params();
+    p.motion.nonrigid.enabled = true;
+    p.lookback.enabled = true;
+    let e = engine_at(&p, 20.0);
+    assert_eq!(
+        e.motion,
+        MotionConfig {
+            nonrigid: Some(NonRigidConfig::default()),
+            ..MotionConfig::default()
+        }
+    );
+    let lb = e.lookback.unwrap();
+    let d = LookbackConfig::default();
+    assert_eq!(
+        (lb.rate, lb.max_frames, lb.order, lb.target),
+        (d.rate, d.max_frames, d.order, d.target)
+    );
 }
 
 /// The default params differ from the engine's configuration only in the
@@ -723,8 +841,8 @@ fn the_fingerprint_follows_the_results_fields_only() {
 //
 // The app sends one params layer per run (`apps/cala/src/lib/run-params.ts`);
 // the bindings build every engine object from it. Each shape the app sends
-// builds the configs the engine's own `Default` and `for_fps` give, plus
-// the options of that shape.
+// builds, at 20 fps, the configs the engine's own `Default` and `for_fps`
+// give, plus the options of that shape.
 
 /// The layers the app sends: look-back on (the defaults), look-back off,
 /// and a live stream with factors (the Final settle on factors).
@@ -742,7 +860,9 @@ fn app_params(layer: &str) -> CalaParams {
 fn the_apps_slow_loop_shapes_build_the_engines_configs() {
     use crate::discover::{JointUpdate, SlowLoopConfig};
     use crate::preprocess::flatten::FlattenConfig;
-    for fps in BUILD_FPS {
+    // At 20 fps, where the engine's frame counts and rates are its defaults.
+    {
+        let fps = 20.0f32;
         for (layer, update, guard, lookback) in [
             (APP_LOOKBACK_ON, JointUpdate::All, 0.6, true),
             (APP_LOOKBACK_OFF, JointUpdate::Off, f32::INFINITY, false),
@@ -781,7 +901,8 @@ fn the_apps_other_configs_are_the_engines() {
     use crate::preprocess::PreprocessConfig;
     use crate::qc::QcConfig;
     use crate::trace::SolverConfig;
-    for fps in BUILD_FPS {
+    {
+        let fps = 20.0f32;
         let e = engine_at(&app_params(APP_LOOKBACK_ON), fps);
         assert_eq!(e.preprocess, PreprocessConfig::for_fps(fps), "{fps}");
         assert_eq!(e.flat_field, OnlineFlatFieldConfig::for_fps(fps), "{fps}");
@@ -825,7 +946,7 @@ fn resolved_params_round_trip_through_json() {
     let mut p = CalaParams::default();
     p.scales.cell_diameter_px = Some(16.0);
     let ctx = Context {
-        fps: 29.97,
+        fps: Some(29.97),
         frame: [608, 608],
     };
     let r = ResolvedParams::new(p, ctx).unwrap();

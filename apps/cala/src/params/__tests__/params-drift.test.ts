@@ -7,7 +7,6 @@ import { schemaDefaults, CALA_PARAMS_VERSION } from '../schema.ts';
 import { CSETTLE, FINAL_SETTLE_LEVEL_DEFAULT } from '../../lib/settle.ts';
 import { VISIT_RATE } from '../../lib/visit-rate.ts';
 import { SPEED_DEFAULTS, CAP_CHOICES, CURVE_PRESET_IDS } from '../../lib/speed-track.ts';
-import { ASSUMED_FPS } from '../../lib/miniscope-meta.ts';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
@@ -40,8 +39,9 @@ describe('cala params drift', () => {
     expect(p.compute.speed.curve).toBe(SPEED_DEFAULTS.preset);
     expect(CURVE_PRESET_IDS).toContain(p.compute.speed.curve);
     expect(p.compute.speed.auto_budget).toBe(SPEED_DEFAULTS.autoBudget);
-    // Durations counted in fixed frames convert at the app's fallback rate.
-    expect(p.time.legacy_frame_fps).toBe(ASSUMED_FPS);
+    // No frame rate is assumed: the recording's, or the override.
+    expect(p.time.fps_override).toBeNull();
+    expect(Object.keys(p.time)).toEqual(['fps_override']);
     // The cell diameter: 10 px set directly, no optics.
     expect(p.scales.cell_diameter_px).toBe(10);
     expect(p.scales.expected_cell_diameter_um).toBeNull();
@@ -74,6 +74,29 @@ describe('cala params drift', () => {
     for (const f of files) {
       const text = readFileSync(join(src, f), 'utf8');
       for (const g of gone) if (text.includes(g)) hits.push(`${f}: ${g}`);
+    }
+    expect(hits).toEqual([]);
+  });
+
+  it('no assumed frame rate comes back', () => {
+    // Every duration converts at the recording's frame rate (or `time.fps_override`); a
+    // recording without one fails to resolve. These are the shapes the 20 fps fallback had.
+    const fallbacks = [
+      /ASSUMED_FPS/,
+      /legacy_frame_fps/,
+      /DEFAULT_FPS/,
+      /fps\)?\s*(\?\?|\|\|)\s*20\b/,
+      /\?\?\s*20\s*[;)]/,
+      /\bfps\s+:\s*20\b/,
+    ];
+    const src = join(repoRoot, 'apps/cala/src');
+    const files = (readdirSync(src, { recursive: true }) as string[]).filter(
+      (f) => /\.(ts|tsx)$/.test(f) && !f.includes('__tests__') && !f.endsWith('.d.ts'),
+    );
+    const hits: string[] = [];
+    for (const f of files) {
+      const text = readFileSync(join(src, f), 'utf8');
+      for (const re of fallbacks) if (re.test(text)) hits.push(`${f}: ${re}`);
     }
     expect(hits).toEqual([]);
   });

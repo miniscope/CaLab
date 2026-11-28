@@ -131,28 +131,19 @@ pub struct PreprocessConfig {
     pub noise: NoiseConfig,
 }
 
-impl Default for PreprocessConfig {
-    fn default() -> PreprocessConfig {
+impl PreprocessConfig {
+    /// Defaults with the time-based settings (background relaxation, flicker
+    /// reference, noise tracker step) at `fps` (Hz, positive and finite).
+    pub fn for_fps(fps: f32) -> PreprocessConfig {
         PreprocessConfig {
             warmup_frames: DEFAULT_WARMUP_FRAMES,
             fov: FovConfig::default(),
             hot: HotPixelConfig::default(),
-            flicker: FlickerConfig::default(),
+            flicker: FlickerConfig::for_fps(fps),
             flatten: FlattenConfig::default(),
             lines: LineMode::default(),
-            background: BackgroundConfig::default(),
-            noise: NoiseConfig::default(),
-        }
-    }
-}
-
-impl PreprocessConfig {
-    /// Defaults with the time-based settings converted at `fps`.
-    pub fn for_fps(fps: f32) -> PreprocessConfig {
-        PreprocessConfig {
             background: BackgroundConfig::for_fps(fps),
-            flicker: FlickerConfig::for_fps(fps),
-            ..PreprocessConfig::default()
+            noise: NoiseConfig::for_fps(fps),
         }
     }
 
@@ -1078,7 +1069,7 @@ mod tests {
     fn registered_frames_mark_samples_from_outside_the_mask_missing() {
         let dims = Dims::new(24, 20).unwrap();
         let frames = synthetic(dims, 40);
-        let cfg = PreprocessConfig::default();
+        let cfg = PreprocessConfig::for_fps(20.0);
         let mut a = calibrated(dims, &frames, &cfg);
         let mut b = a.clone();
         // The 3-row shift does move FOV pixels out of the data.
@@ -1138,7 +1129,7 @@ mod tests {
         }
         let dims = Dims::new(24, 20).unwrap();
         let frames = synthetic(dims, 12);
-        let cfg = PreprocessConfig::default();
+        let cfg = PreprocessConfig::for_fps(20.0);
         let mut a = calibrated(dims, &frames, &cfg);
         let mut b = a.clone();
         let mut reg = Shift(3);
@@ -1183,7 +1174,7 @@ mod tests {
             let dims = Dims::new(w, h).unwrap();
             for value in [0u8, 255, 17] {
                 let frames = vec![vec![value; dims.pixels()]; 6];
-                let cfg = PreprocessConfig::default();
+                let cfg = PreprocessConfig::for_fps(20.0);
                 let mut p = calibrated(dims, &frames, &cfg);
                 let mut out = vec![0.0; dims.pixels()];
                 for f in &frames {
@@ -1196,7 +1187,7 @@ mod tests {
         // Non-finite f32 input is treated as 0.
         let dims = Dims::new(8, 8).unwrap();
         let frames = synthetic(dims, 4);
-        let mut p = calibrated(dims, &frames, &PreprocessConfig::default());
+        let mut p = calibrated(dims, &frames, &PreprocessConfig::for_fps(20.0));
         let mut out = vec![0.0; 64];
         let bad: Vec<f32> = (0..64)
             .map(|i| match i % 3 {
@@ -1219,10 +1210,10 @@ mod tests {
         assert!(Dims::new(1 << 13, 1 << 13).is_err());
         assert!(Dims::new(usize::MAX, 2).is_err());
         let acc = WarmupAccumulator::new(dims);
-        assert!(Calibration::from_warmup(&acc, &PreprocessConfig::default()).is_err());
+        assert!(Calibration::from_warmup(&acc, &PreprocessConfig::for_fps(20.0)).is_err());
         let bad_cfg = PreprocessConfig {
             warmup_frames: 0,
-            ..PreprocessConfig::default()
+            ..PreprocessConfig::for_fps(20.0)
         };
         assert!(bad_cfg.validate().is_err());
         let other = Calibration::new(
@@ -1237,7 +1228,7 @@ mod tests {
         let dims = Dims::new(16, 12).unwrap();
         let frames = synthetic(dims, 20);
         for cfg in [
-            PreprocessConfig::default(),
+            PreprocessConfig::for_fps(20.0),
             PreprocessConfig {
                 lines: LineMode::Both,
                 fov: FovConfig {

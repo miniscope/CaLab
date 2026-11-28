@@ -71,7 +71,7 @@ fn median(mut v: Vec<f32>) -> f32 {
 
 /// Precision / recall of the defect map against minisim's hot and stuck masks.
 fn score_defects(fx: &Fixture, k_sigma: f32) -> (Calibration, usize, usize, usize) {
-    let mut cfg = PreprocessConfig::default();
+    let mut cfg = PreprocessConfig::for_fps(20.0);
     cfg.hot.k_sigma = k_sigma;
     let cal = calibrate(fx, &cfg);
     let hot_gt = load("hot_pixel_mask.npy").into_u8().unwrap();
@@ -98,7 +98,7 @@ fn hot_pixel_precision_and_recall() {
         let (_, tp, fp, fn_) = score_defects(&fx, k);
         eprintln!("hot pixels k = {k}: tp {tp} fp {fp} fn {fn_}");
     }
-    let k = PreprocessConfig::default().hot.k_sigma;
+    let k = PreprocessConfig::for_fps(20.0).hot.k_sigma;
     let (cal, tp, fp, fn_) = score_defects(&fx, k);
     let precision = tp as f32 / (tp + fp).max(1) as f32;
     let recall = tp as f32 / (tp + fn_).max(1) as f32;
@@ -132,7 +132,7 @@ fn flatten_metrics(fx: &Fixture, sigma: f32) -> (f32, f32, f64, Vec<f32>) {
             sigma_px: Some(sigma),
             ..FlattenConfig::default()
         },
-        ..PreprocessConfig::default()
+        ..PreprocessConfig::for_fps(20.0)
     };
     let cal = calibrate(fx, &cfg);
     let dims = fx.dims;
@@ -354,7 +354,7 @@ fn background_recovers_static_floor_and_tracks_up_step() {
     // Known static floor: the fixture's flattened median-ish structure,
     // here simply the flattened first frame smoothed in time by taking the
     // temporal mean (any fixed image works; this one has realistic texture).
-    let cal = calibrate(&fx, &PreprocessConfig::default());
+    let cal = calibrate(&fx, &PreprocessConfig::for_fps(20.0));
     let mut fl = GlowFlattener::new(cal.fov(), &FlattenConfig::default()).unwrap();
     let mut floor_true = vec![0.0f32; n];
     let mut buf = vec![0.0f32; n];
@@ -368,7 +368,7 @@ fn background_recovers_static_floor_and_tracks_up_step() {
         }
     }
     let sigma = 3.0f32;
-    let mut bg = RunningMinBackground::new(dims, &BackgroundConfig::default()).unwrap();
+    let mut bg = RunningMinBackground::new(dims, &BackgroundConfig::for_fps(20.0)).unwrap();
     let mut rng = LcgBoxMuller(11);
     // Sparse transients: each pixel block of 8x8 lights up for 40 frames
     // (+30) once every ~600 frames, staggered.
@@ -443,9 +443,9 @@ fn noise_map_matches_simulator_noise() {
             },
             flicker: FlickerConfig {
                 mode: FlickerMode::Off,
-                ..FlickerConfig::default()
+                ..FlickerConfig::for_fps(20.0)
             },
-            ..PreprocessConfig::default()
+            ..PreprocessConfig::for_fps(20.0)
         };
         let cal = calibrate(&fx, &cfg);
         let mut p = Preprocessor::new(cal.clone(), &cfg).unwrap();
@@ -485,9 +485,9 @@ fn replay_from_serialized_state_is_bit_exact() {
     let cfg = PreprocessConfig {
         background: BackgroundConfig {
             snapshot_every: 50,
-            ..BackgroundConfig::default()
+            ..BackgroundConfig::for_fps(20.0)
         },
-        ..PreprocessConfig::default()
+        ..PreprocessConfig::for_fps(20.0)
     };
     let cal = calibrate(&fx, &cfg);
     let n = fx.dims.pixels();
@@ -571,7 +571,7 @@ fn column_mode_removes_column_fixed_pattern() {
     for mode in [LineMode::Off, LineMode::Columns] {
         let cfg = PreprocessConfig {
             lines: mode,
-            ..PreprocessConfig::default()
+            ..PreprocessConfig::for_fps(20.0)
         };
         let cal = calibrate(&fx, &cfg);
         let mut p = Preprocessor::new(cal.clone(), &cfg).unwrap();
@@ -649,7 +649,7 @@ fn pearson(a: &[f64], b: &[f64]) -> f64 {
 #[test]
 fn vignetted_fixture_keeps_its_fov_mask() {
     let fx = fixture();
-    let cal = calibrate(&fx, &PreprocessConfig::default());
+    let cal = calibrate(&fx, &PreprocessConfig::for_fps(20.0));
     let mask = cal.fov().mask();
     let mut h: u64 = 0xcbf29ce484222325;
     for &b in mask {
@@ -681,9 +681,9 @@ fn flicker_stage_on_a_flicker_free_scene() {
         let cfg = PreprocessConfig {
             flicker: FlickerConfig {
                 mode,
-                ..FlickerConfig::default()
+                ..FlickerConfig::for_fps(20.0)
             },
-            ..PreprocessConfig::default()
+            ..PreprocessConfig::for_fps(20.0)
         };
         let cal = calibrate(&fx, &cfg);
         let mut p = Preprocessor::new(cal.clone(), &cfg).unwrap();

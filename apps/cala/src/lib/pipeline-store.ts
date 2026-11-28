@@ -697,8 +697,11 @@ export function createPipelineStore(
       );
       if (gen !== generation) return;
       setPlan(p);
-      const run = runParams();
-      if (run) flatStore.setSchedule(run.engine.fps, run.engine.flat_field.first_frames);
+      // The run's frame rate (the recording's, or the override): every time on the run's
+      // readouts converts at it.
+      const run = parseRunParams(p.params);
+      flatStore.setSchedule(run.engine.fps, run.engine.flat_field.first_frames);
+      cells?.setFps(run.engine.fps);
       // The look-back workers build their motion corrector and trace engines from the run's params.
       if (lb) lookbackFeed!.params(session, p.params);
       // Joint run with the session fix: judge each boundary (observers only).
@@ -706,10 +709,10 @@ export function createPipelineStore(
         boundaryMonitor = new BoundaryMonitor({
           boundaries: p.boundaries,
           frames: p.frameCount,
-          fps: cells?.fps() ?? 0,
+          fps: run.engine.fps,
         });
       runHistory?.reset({
-        fps: cells?.fps() ?? 0,
+        fps: run.engine.fps,
         live: flat.identity?.()?.live === true,
         frameCount: p.frameCount,
         // What is started now: 3 fast stages, the slow worker, the look-back worker; the visit

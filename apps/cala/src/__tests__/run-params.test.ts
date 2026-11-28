@@ -197,10 +197,17 @@ describe("the app's params resolved", () => {
     expect(feed.params).toHaveBeenCalledWith(expect.any(Number), testPlan(100).params);
   });
 
-  it('a recording without a frame rate resolves at the declared fallback', () => {
-    const json = resolveRunParams({}, { fps: null, width: 32, height: 32 });
-    expect(runParams(json).context.fps).toBe(20);
-    expect(runParams(json).engine.fps).toBe(20);
+  it('a recording without a frame rate does not resolve until the override is set', () => {
+    expect(() => resolveRunParams({}, { fps: null, width: 32, height: 32 })).toThrow(
+      /\/time\/fps_override/,
+    );
+    const json = resolveRunParams(
+      { time: { fps_override: 30 } },
+      { fps: null, width: 32, height: 32 },
+    );
+    expect(runParams(json).context.fps).toBeNull();
+    expect(runParams(json).engine.fps).toBe(30);
+    expect(runParams(json).engine.lookback.max_frames).toBe(4500);
   });
 
   it('a key that is not a params field is refused with its pointer', () => {

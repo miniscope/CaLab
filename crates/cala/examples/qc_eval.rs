@@ -290,8 +290,10 @@
 //!                      linearly over the run (pixel gain ±A, column offset
 //!                      ±B grey levels; patterns written to `drift_*.f32`)
 //!   --no-heldout       skip the ground-truth-free held-out score
-//!   --fps R            frame rate for the time-based preprocessing and
-//!                      flat-field settings (default 20; the sims' rate)
+//!   --fps R            the recording's frame rate, Hz, for every duration
+//!                      (default: the recording's own, from timeStamps.csv,
+//!                      then metaData.json; a recording without one needs
+//!                      it)
 //!   --boundary-log     diagnostics builds only (`--features diagnostics`):
 //!                      write `boundary_pre.tsv` (per frame: input mean,
 //!                      glow, flicker fit, background floor, noise map every
@@ -439,14 +441,13 @@ use oracle::{read_f32s, read_oracle, read_u32, Oracle};
 mod avi;
 #[path = "common/eval_params.rs"]
 mod eval_params;
+#[path = "common/fps.rs"]
+mod fps;
 #[path = "common/matching.rs"]
 mod matching;
 #[path = "common/util.rs"]
 mod util;
 
-/// The frame rate of `qc_eval`'s QC monitor: its windows count frames at
-/// 20 Hz whatever `--fps` is.
-const QC_FPS: f32 = 20.0;
 use avi::Recording;
 #[cfg(test)]
 use matching::sparse_corr;
@@ -5237,16 +5238,25 @@ fn main() {
         frames = frames.min(o.n_frames as u32);
     }
     let t_len = frames as usize;
-    // `--fps R`: the recording's frame rate for the time-based preprocessing
-    // and flat-field settings (default 20, the sims'; Miniscope V4 runs at 30).
-    let fps: f32 = arg_value(&args, "--fps").map_or(20.0, |s| s.parse().unwrap());
+    // The recording's frame rate: `--fps R`, else the app's rule on its
+    // timestamps and metadata.
+    let fps: f32 = match arg_value(&args, "--fps") {
+        Some(s) => s.parse().unwrap(),
+        None => {
+            let (f, from) = fps::recording_fps(&avi_dir).unwrap_or_else(|| {
+                panic!("{avi_dir:?} has no frame rate (timeStamps.csv, metaData.json): pass --fps")
+            });
+            println!("frame rate {f:.3} Hz from {from}");
+            f as f32
+        }
+    };
     // The run's params: the app's configuration, `--params FILE`, then the
     // config flags (`common/eval_params.rs`).
     let params = eval_params::eval_params(&args, f64::from(fps));
     let ecfg = Engine::build(
         &params,
         Context {
-            fps: f64::from(fps),
+            fps: Some(f64::from(fps)),
             frame: [dims.width as u32, dims.height as u32],
         },
     )
@@ -6049,8 +6059,7 @@ fn main() {
                             }
                         }
                     }
-                    qc =
-                        Some(QcMonitor::new(dims, fov.clone(), noise, ecfg.qc_at(QC_FPS)).unwrap());
+                    qc = Some(QcMonitor::new(dims, fov.clone(), noise, ecfg.qc.clone()).unwrap());
                 }
                 if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
                     let now = tm.at(t);
@@ -7137,13 +7146,8 @@ fn main() {
     let mut eng = TraceEngine::new(lib.clone(), ecfg.solver).unwrap();
     eng.set_signed(dump_signed);
     eng.set_consolidated_ring_gradient(true);
-    let mut q2 = QcMonitor::new(
-        dims,
-        fov.clone(),
-        pipe.pre.noise().sigma(),
-        ecfg.qc_at(QC_FPS),
-    )
-    .unwrap();
+    let mut q2 =
+        QcMonitor::new(dims, fov.clone(), pipe.pre.noise().sigma(), ecfg.qc.clone()).unwrap();
     let n = lib.len();
     let norms: Vec<f32> = (0..n)
         .map(|s| lib.filtered(s).1.iter().map(|a| a * a).sum())

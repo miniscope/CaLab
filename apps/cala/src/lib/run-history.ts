@@ -541,7 +541,8 @@ function freshStore(workers: number): StreamHistory {
 export function createRunHistory(clock: () => number = () => Date.now()) {
   let history = freshStore(1);
   let events = new RunEvents();
-  let fps = 20;
+  /** The run's frame rate, Hz (NaN until `reset` or `load` gives one). */
+  let fps = Number.NaN;
   let live = false;
   let wall0 = clock();
   let processedS = 0;
@@ -563,7 +564,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
 
   /** A new pass-1 run: empty store and log at this frame rate. */
   function reset(o: { fps: number; live: boolean; frameCount?: number; workers: number }): void {
-    fps = o.fps > 0 ? o.fps : 20;
+    fps = o.fps > 0 ? o.fps : Number.NaN;
     live = o.live;
     wall0 = clock();
     processedS = 0;
@@ -610,7 +611,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
    * history when the export has none.
    */
   function load(o: { bins: HistoryExport | null; events: readonly RunEvent[]; fps: number }): void {
-    fps = o.fps > 0 ? o.fps : 20;
+    fps = o.fps > 0 ? o.fps : Number.NaN;
     live = false;
     lastDropped = 0;
     gapPending = 0;

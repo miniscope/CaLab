@@ -30,8 +30,7 @@
       "title": "Time",
       "description": "The recording's frame rate.",
       "default": {
-        "fps_override": null,
-        "legacy_frame_fps": 20.0
+        "fps_override": null
       }
     },
     "input": {
@@ -442,22 +441,9 @@
           "x-level": "advanced",
           "x-scope": "stream",
           "x-affects": "results"
-        },
-        "legacy_frame_fps": {
-          "type": ["number", "null"],
-          "format": "double",
-          "title": "Legacy frame-count rate",
-          "description": "The frame rate at which the durations the engine counts in fixed frames are converted. `null`: the recording's frame rate.",
-          "minimum": 1.0,
-          "maximum": 1000.0,
-          "default": 20.0,
-          "x-unit": "Hz",
-          "x-level": "internal",
-          "x-scope": "run",
-          "x-affects": "results"
         }
       },
-      "description": "The recording's frame rate."
+      "description": "The recording's frame rate. Every duration of the params is converted to frames at it."
     },
     "Input": {
       "type": "object",
@@ -1044,7 +1030,7 @@
           "type": "number",
           "format": "double",
           "title": "Shortest event",
-          "description": "Shortest transient that counts as an event.",
+          "description": "Shortest transient that counts as an event; never fewer than 3 frames, whatever the frame rate, since the run length is also what keeps white noise from making events.",
           "minimum": 0.0,
           "maximum": 10.0,
           "default": 0.15,

@@ -145,7 +145,7 @@ export interface Scales {
 export type ScaleAdapt = 'off' | 'global' | 'local';
 
 /**
- * The recording's frame rate.
+ * The recording's frame rate. Every duration of the params is converted to frames at it.
  */
 export interface Time {
   /**
@@ -153,11 +153,6 @@ export interface Time {
    * Unit: Hz.
    */
   fps_override: number | null;
-  /**
-   * The frame rate at which the durations the engine counts in fixed frames are converted. `null`: the recording's frame rate.
-   * Unit: Hz.
-   */
-  legacy_frame_fps: number | null;
 }
 
 /**
@@ -412,7 +407,7 @@ export interface Discover {
    */
   min_events: number;
   /**
-   * Shortest transient that counts as an event.
+   * Shortest transient that counts as an event; never fewer than 3 frames, whatever the frame rate, since the run length is also what keeps white noise from making events.
    * Unit: s.
    */
   event_s: number;

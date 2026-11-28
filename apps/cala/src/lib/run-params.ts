@@ -15,7 +15,6 @@ import type {
   VisitMode,
 } from '../params/cala-params.d.ts';
 import { schemaDefaults } from '../params/schema.ts';
-import { ASSUMED_FPS } from './miniscope-meta.ts';
 
 /** Any subset of `T`'s keys, at any depth. */
 export type DeepPartial<T> = {
@@ -120,22 +119,23 @@ export function runParamsLayer(s: RunParamsSettings): ParamsLayer {
 
 /** What `resolveParams` needs of the recording. */
 export interface ParamsContext {
-  /** Frames per second: the recording's, or `ASSUMED_FPS` when it has none. */
-  fps: number;
+  /**
+   * The recording's frames per second; null when it has none (resolving then fails unless
+   * `time.fps_override` is set).
+   */
+  fps: number | null;
   /** Frame width and height, px. */
   frame: [number, number];
 }
 
-/** The recording's context: its frame rate when it has one, else the declared fallback. */
+/** The recording's context: its frame rate when it has a usable one, else null. */
 export function paramsContext(info: {
   fps?: number | null;
   width: number;
   height: number;
 }): ParamsContext {
   const fps =
-    typeof info.fps === 'number' && Number.isFinite(info.fps) && info.fps > 0
-      ? info.fps
-      : ASSUMED_FPS;
+    typeof info.fps === 'number' && Number.isFinite(info.fps) && info.fps > 0 ? info.fps : null;
   return { fps, frame: [info.width, info.height] };
 }
 

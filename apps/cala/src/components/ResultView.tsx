@@ -221,7 +221,8 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
   const runHistory = createRunHistory();
   const ui = createHistoryUi(runHistory);
   const cells = createCellStore(undefined, undefined, runHistory);
-  const fps = result.fps > 0 ? result.fps : 20;
+  // An export without a frame rate shows frames: its times stay NaN (unknown).
+  const fps = result.fps > 0 ? result.fps : Number.NaN;
   cells.loadResult({
     library: result.library,
     firstSeen: result.firstSeen,

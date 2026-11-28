@@ -35,9 +35,8 @@ pub fn set_diameter_fixed_ring(p: &mut CalaParams, d: f64) {
     p.discover.margin_px = Some(ENGINE_MARGIN_PX);
 }
 
-/// A duration a flag counts in frames, as seconds: at
-/// `time.legacy_frame_fps`, or at the recording's `fps` when that is unset
-/// (the rate [`super::resolve::resolve`] converts it back at).
-pub fn legacy_seconds(p: &CalaParams, fps: f64, frames: f64) -> f64 {
-    frames / p.time.legacy_frame_fps.unwrap_or(fps)
+/// A duration a flag counts in frames at the recording's `fps`, as the
+/// seconds [`super::resolve::resolve`] converts back to those frames.
+pub fn frames_to_seconds(fps: f64, frames: f64) -> f64 {
+    frames / fps
 }

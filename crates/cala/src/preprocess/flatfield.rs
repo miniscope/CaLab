@@ -771,14 +771,9 @@ pub struct OnlineFlatFieldConfig {
 }
 
 impl OnlineFlatFieldConfig {
-    /// Defaults with the time-based settings converted at `fps` (20 when
-    /// unknown or not positive).
+    /// Defaults with the time-based settings converted at `fps` (Hz,
+    /// positive and finite).
     pub fn for_fps(fps: f32) -> OnlineFlatFieldConfig {
-        let fps = if fps.is_finite() && fps > 0.0 {
-            fps
-        } else {
-            20.0
-        };
         let frames = |s: f32| (s * fps).round().max(1.0);
         OnlineFlatFieldConfig {
             estimator: FlatFieldConfig {
@@ -791,12 +786,6 @@ impl OnlineFlatFieldConfig {
             min_new_bin_frames: 25,
             warm_iterations: 10,
         }
-    }
-}
-
-impl Default for OnlineFlatFieldConfig {
-    fn default() -> Self {
-        OnlineFlatFieldConfig::for_fps(20.0)
     }
 }
 

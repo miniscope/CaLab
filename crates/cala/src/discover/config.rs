@@ -242,6 +242,13 @@ pub struct SlowLoopConfig {
     /// as a transient (dip) when it peaks beyond `event_z` σ and lasts at
     /// least this many frames.
     pub event_frames: u32,
+    /// Evidence ledger: baseline step per frame, in noise scales, in (0, 1].
+    pub ledger_base_rate: f32,
+    /// Evidence ledger: relative noise-scale step per frame, in (0, 1).
+    pub ledger_scale_rate: f32,
+    /// Evidence ledger: longest excursion during which its trackers stay
+    /// frozen, frames.
+    pub ledger_max_freeze_frames: u32,
     /// Transients after birth that move a cell from probation to
     /// established (with dips below `dip_ratio` of them).
     pub establish_events: u32,
@@ -444,6 +451,9 @@ impl Default for SlowLoopConfig {
             min_test_frames: 8,
             visit_after_slots: 6,
             event_frames: 3,
+            ledger_base_rate: 0.02,
+            ledger_scale_rate: 0.01,
+            ledger_max_freeze_frames: 100,
             establish_events: 3,
             probation_frames: 4800,
             keep_z: 2.0,
@@ -520,6 +530,10 @@ impl SlowLoopConfig {
             && self.min_fit_frames >= 2
             && self.min_test_frames >= 2
             && self.event_frames >= 1
+            && self.ledger_base_rate > 0.0
+            && self.ledger_base_rate <= 1.0
+            && self.ledger_scale_rate > 0.0
+            && self.ledger_scale_rate < 1.0
             && self.keep_z.is_finite()
             && self.fail_ratio.is_finite()
             && self.delete_fails >= 1

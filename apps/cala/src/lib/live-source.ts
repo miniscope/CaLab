@@ -26,7 +26,6 @@
  * socket-like object, so it is tested with a fake socket.
  */
 import type { FramePixels, FrameSourceInfo } from './frame-source.ts';
-import { ASSUMED_FPS } from './miniscope-meta.ts';
 import type { FrameReader, LiveBatchInfo } from './pipeline-types.ts';
 import { UNBOUNDED } from './pipeline-plan.ts';
 
@@ -164,7 +163,9 @@ export function liveInfo(hello: LiveHello, url: string): FrameSourceInfo {
     ignoredFiles: [],
     warnings:
       hello.fps === null
-        ? [`The live source gave no frame rate; time-based settings assume ${ASSUMED_FPS} Hz.`]
+        ? [
+            'The live source gave no frame rate: set the frame rate override (Advanced settings) before running.',
+          ]
         : [],
     live: { url, ...(hello.name ? { name: hello.name } : {}) },
     ...(hello.serial ? { device: { serial: hello.serial } } : {}),

@@ -7,13 +7,6 @@
 import type { DeviceIdentity } from './flat-field.ts';
 import { median } from './stats.ts';
 
-/**
- * The frame rate time-based settings assume when the recording gives none
- * (`fpsSource: 'none'`): the rate cala's defaults were validated at. Said in
- * the recording's warnings and the Recording panel, never silent.
- */
-export const ASSUMED_FPS = 20;
-
 export interface MiniscopeMetadata {
   /** Nominal frame rate from `frameRate` (`"20FPS"` or a number), if present. */
   frameRate: number | null;

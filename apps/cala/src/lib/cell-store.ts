@@ -187,7 +187,8 @@ export function createCellStore(
   /** "Still moving" hint by cell id, in multiples of the cell's split-half noise (information only). */
   const [stillMoving, setStillMoving] = createSignal<ReadonlyMap<number, number>>(new Map());
   const [convergence, setConvergence] = createSignal<ConvergenceStatus>(convergenceStatus([]));
-  const [fps, setFps] = createSignal(20);
+  /** The run's frame rate, Hz (NaN until a run or a loaded result gives one). */
+  const [fps, setFps] = createSignal(Number.NaN);
   /** Showing a saved result (`loadResult`), not a run. */
   const [saved, setSaved] = createSignal(false);
 
@@ -407,7 +408,7 @@ export function createCellStore(
       added: o.library.ids.length,
       removed: 0,
     });
-    setFps(o.fps > 0 ? o.fps : 20);
+    if (o.fps > 0) setFps(o.fps);
     setFrame(o.frames);
     setVersion(o.library.version);
     setLibrary(o.library);
@@ -485,7 +486,9 @@ export function createCellStore(
     },
     convergence,
     fps,
-    setFps: (v: number) => setFps(v > 0 ? v : 20),
+    setFps: (v: number) => {
+      if (v > 0) setFps(v);
+    },
     slowTiming: () => ({ batchMs: slowBatchMs, stepMs: slowStepMs }),
   };
 }

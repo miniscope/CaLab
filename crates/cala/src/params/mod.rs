@@ -245,8 +245,9 @@ pub enum ScaleAdapt {
 
 // ---- time ----
 
-/// The recording's frame rate.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+/// The recording's frame rate. Every duration of the params is converted
+/// to frames at it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Time {
     /// The frame rate to use instead of the one read from the file; for a
@@ -257,23 +258,6 @@ pub struct Time {
         extend("x-unit" = "Hz", "x-level" = "advanced", "x-scope" = "stream")
     )]
     pub fps_override: Option<f64>,
-    /// The frame rate at which the durations the engine counts in fixed
-    /// frames are converted. `null`: the recording's frame rate.
-    #[schemars(
-        title = "Legacy frame-count rate",
-        range(min = 1.0, max = 1000.0),
-        extend("x-unit" = "Hz", "x-level" = "internal")
-    )]
-    pub legacy_frame_fps: Option<f64>,
-}
-
-impl Default for Time {
-    fn default() -> Time {
-        Time {
-            fps_override: None,
-            legacy_frame_fps: Some(20.0),
-        }
-    }
 }
 
 // ---- input ----
@@ -712,7 +696,9 @@ pub struct Discover {
         extend("x-unit" = "count", "x-level" = "advanced")
     )]
     pub min_events: u32,
-    /// Shortest transient that counts as an event.
+    /// Shortest transient that counts as an event; never fewer than 3
+    /// frames, whatever the frame rate, since the run length is also what
+    /// keeps white noise from making events.
     #[schemars(
         title = "Shortest event",
         range(min = 0.0, max = 10.0),

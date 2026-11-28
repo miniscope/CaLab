@@ -495,7 +495,7 @@ fn reextraction_reproduces_the_online_pass() {
             cell_diameter_px: 4.0,
             ..FlattenConfig::default()
         },
-        ..PreprocessConfig::default()
+        ..PreprocessConfig::for_fps(20.0)
     };
     let cal = Calibration::new(FovMask::full(dims()), HotPixelMap::empty(dims())).unwrap();
     let mut pre = Preprocessor::new(cal.clone(), &cfg).unwrap();

@@ -23,7 +23,10 @@ const OPTIONS = { calibrationFrames: 16, motionWarmupFrames: 16, batchSize: 8, p
 
 const openAvi = () =>
   FrameSource.open(
-    entriesFromFiles([makeFile('0.avi', buildAvi({ width: W, height: H, frames: FRAMES }), 'rec')]),
+    entriesFromFiles([
+      makeFile('0.avi', buildAvi({ width: W, height: H, frames: FRAMES }), 'rec'),
+      makeFile('metaData.json', '{"frameRate": "20FPS"}', 'rec'),
+    ]),
   );
 
 /**
@@ -421,6 +424,7 @@ describe('LookbackReader', () => {
           dir: `data/${name}`,
           entries: entriesFromFiles([
             makeFile('0.avi', buildAvi({ width: W, height: H, frames }), `data/${name}`),
+            makeFile('metaData.json', '{"frameRate": "20FPS"}', `data/${name}`),
           ]),
         })),
       );

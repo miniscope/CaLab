@@ -14,7 +14,6 @@ import { extractAfterDiscover } from '../lib/run-stages.ts';
 import { CSETTLE, SETTLE } from '../lib/settle.ts';
 import { lookbackFacts, notSettled, settleNote, type LookbackFacts } from '../lib/lookback-text.ts';
 import { RAIL_SPEED_RANGE } from '../lib/rail-view.ts';
-import { ASSUMED_FPS } from '../lib/miniscope-meta.ts';
 import { createSampled } from '../lib/sampled.ts';
 import {
   STATE_WORD,
@@ -297,10 +296,9 @@ export function DiscoverBody(props: {
     SAMPLE_MS,
   );
   const cellCount = () => snap().cells;
-  const fps = () =>
-    props.fps && props.fps > 0
-      ? props.fps
-      : (props.pipeline.runParams()?.engine.fps ?? ASSUMED_FPS);
+  /** The run's frame rate, Hz; unset before the run's params are resolved. */
+  const fps = (): number | undefined =>
+    props.fps && props.fps > 0 ? props.fps : props.pipeline.runParams()?.engine.fps;
   const shown = () => (props.pipeline.lookbackRun() ? snap().facts : null);
   return (
     <div
@@ -348,21 +346,23 @@ export function DiscoverBody(props: {
           </>
         )}
       </Show>
-      <Show when={props.step.state === 'running' || props.step.state === 'paused'}>
-        <MeterRow
-          label="Lag behind reading"
-          value={snap().lag}
-          min={0}
-          max={LAG_RANGE_S * fps()}
-          tone="neutral"
-          size="sm"
-          display={snap().lag !== null ? n0(snap().lag!) : undefined}
-          unit="frames"
-          format={(v) =>
-            `the cell model is ${n0(v)} frames (${(v / fps()).toFixed(1)} s) behind the frames read; fixed range 0 to ${LAG_RANGE_S} s`
-          }
-          testid="discover-lag"
-        />
+      <Show when={(props.step.state === 'running' || props.step.state === 'paused') && fps()} keyed>
+        {(rate) => (
+          <MeterRow
+            label="Lag behind reading"
+            value={snap().lag}
+            min={0}
+            max={LAG_RANGE_S * rate}
+            tone="neutral"
+            size="sm"
+            display={snap().lag !== null ? n0(snap().lag!) : undefined}
+            unit="frames"
+            format={(v) =>
+              `the cell model is ${n0(v)} frames (${(v / rate).toFixed(1)} s) behind the frames read; fixed range 0 to ${LAG_RANGE_S} s`
+            }
+            testid="discover-lag"
+          />
+        )}
       </Show>
       {props.children}
     </div>

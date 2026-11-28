@@ -142,21 +142,10 @@ pub struct FlickerConfig {
     pub min_contrast: f32,
 }
 
-impl Default for FlickerConfig {
-    fn default() -> FlickerConfig {
-        FlickerConfig::for_fps(20.0)
-    }
-}
-
 impl FlickerConfig {
-    /// Defaults with the reference time constant converted at `fps`
-    /// (non-positive or non-finite = 20 fps).
+    /// Defaults with the reference time constant converted at `fps` (Hz,
+    /// positive and finite).
     pub fn for_fps(fps: f32) -> FlickerConfig {
-        let fps = if fps.is_finite() && fps > 0.0 {
-            fps
-        } else {
-            20.0
-        };
         FlickerConfig {
             mode: FlickerMode::Both,
             tau_frames: (DEFAULT_TAU_SECONDS * fps).max(1.0),
@@ -603,7 +592,7 @@ mod tests {
         let dims = Dims::new(W, H).unwrap();
         let cfg = FlickerConfig {
             grid_pixels: 1 << 20,
-            ..FlickerConfig::default()
+            ..FlickerConfig::for_fps(20.0)
         };
         let mut fc = FlickerCorrector::new(&FovMask::full(dims), &cfg).unwrap();
         let mut worst_before = 0.0f32;
@@ -634,7 +623,7 @@ mod tests {
     fn flat_reference_falls_back_to_gain_only() {
         let dims = Dims::new(W, H).unwrap();
         let mut fc =
-            FlickerCorrector::new(&FovMask::full(dims), &FlickerConfig::default()).unwrap();
+            FlickerCorrector::new(&FovMask::full(dims), &FlickerConfig::for_fps(20.0)).unwrap();
         for t in 0..30 {
             let h = |i: usize| ((i * 7919 + t * 104_729) % 100) as f32 / 100.0;
             let mut f: Vec<f32> = (0..W * H).map(|i| 100.0 * 1.02 + h(i)).collect();
@@ -652,7 +641,7 @@ mod tests {
         let dims = Dims::new(W, H).unwrap();
         let off = FlickerConfig {
             mode: FlickerMode::Off,
-            ..FlickerConfig::default()
+            ..FlickerConfig::for_fps(20.0)
         };
         let mut fc = FlickerCorrector::new(&FovMask::full(dims), &off).unwrap();
         let clean = scene(3, true);
@@ -663,7 +652,7 @@ mod tests {
 
         // Recorded corrections replay exactly, and state restores exactly.
         let mut fc =
-            FlickerCorrector::new(&FovMask::full(dims), &FlickerConfig::default()).unwrap();
+            FlickerCorrector::new(&FovMask::full(dims), &FlickerConfig::for_fps(20.0)).unwrap();
         let mut recs = Vec::new();
         let mut outs = Vec::new();
         let mut mid = None;
@@ -683,7 +672,7 @@ mod tests {
             assert_eq!(&f, out, "replay {t}");
         }
         let mut again =
-            FlickerCorrector::new(&FovMask::full(dims), &FlickerConfig::default()).unwrap();
+            FlickerCorrector::new(&FovMask::full(dims), &FlickerConfig::for_fps(20.0)).unwrap();
         again.restore(mid.as_ref().unwrap()).unwrap();
         for (t, (raw, out)) in outs.iter().enumerate().skip(25) {
             let mut f = raw.clone();
@@ -709,7 +698,7 @@ mod tests {
         let fov = FovMask::from_mask(dims, &mask).unwrap();
         let cfg = FlickerConfig {
             grid_pixels: 1 << 20,
-            ..FlickerConfig::default()
+            ..FlickerConfig::for_fps(20.0)
         };
         let mut fc = FlickerCorrector::new(&fov, &cfg).unwrap();
         let base: Vec<f32> = (0..64).map(|i| 10.0 + (i % 5) as f32 * 7.0).collect();
@@ -725,19 +714,19 @@ mod tests {
         for bad in [
             FlickerConfig {
                 tau_frames: 0.5,
-                ..FlickerConfig::default()
+                ..FlickerConfig::for_fps(20.0)
             },
             FlickerConfig {
                 grid_pixels: 3,
-                ..FlickerConfig::default()
+                ..FlickerConfig::for_fps(20.0)
             },
             FlickerConfig {
                 clip_sigma: f32::NAN,
-                ..FlickerConfig::default()
+                ..FlickerConfig::for_fps(20.0)
             },
             FlickerConfig {
                 min_contrast: -1.0,
-                ..FlickerConfig::default()
+                ..FlickerConfig::for_fps(20.0)
             },
         ] {
             assert!(bad.validate().is_err());

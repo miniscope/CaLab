@@ -27,16 +27,22 @@ pub const FLAG_LOW_QUALITY: u32 = 32;
 const BAND_GAIN_FLOOR: f64 = 1e-2;
 /// Smallest registration region side, in pixels.
 const MIN_ROI_SIDE: usize = 16;
-/// Rate of the running brightness / quality statistics (per frame).
-const STATS_RATE: f32 = 0.02;
+/// Time constant of the running brightness / quality statistics, s
+/// (`MotionConfig::stats_rate` = 1 / (τ × fps)).
+pub const STATS_TAU_S: f32 = 2.5;
 /// Smoothing (px) of the maps behind the static-fraction weights.
 const WEIGHT_SIGMA: f32 = 2.0;
-/// Rate of the running moments behind the static-fraction weights.
-const WEIGHT_RATE: f32 = 1.0 / 1000.0;
+/// Time constant of the running moments behind the static-fraction
+/// weights, s (`MotionConfig::weight_rate` = 1 / (τ × fps)).
+pub const WEIGHT_TAU_S: f32 = 50.0;
 /// Largest drift of the running template searched against the warm-up one.
 const DRIFT_SEARCH_PX: f32 = 4.0;
-/// Rate of the running per-patch noise and power estimates (per frame).
-const SHRINK_RATE: f32 = 0.05;
+/// Time constant of the running per-patch noise and power estimates, s
+/// (`NonRigidConfig::shrink_rate` = 1 / (τ × fps)).
+pub const SHRINK_TAU_S: f32 = 1.0;
+/// Half-life of the temporal smoother of the non-rigid residuals, s
+/// (`NonRigidConfig::temporal_alpha` = 1 − 2^(−1 / (h × fps))).
+pub const TEMPORAL_HALF_LIFE_S: f32 = 0.05;
 
 /// A rectangle in frame pixel coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,8 +70,11 @@ pub struct NonRigidConfig {
     /// neighbours by more than this (px, either axis) is rejected.
     pub outlier_px: f32,
     /// Weight of the new estimate in the exponential temporal smoother of the
-    /// residuals (1 = no smoothing).
+    /// residuals, per frame (1 = no smoothing).
     pub temporal_alpha: f32,
+    /// Rate of the running per-patch noise and power estimates, per frame,
+    /// in (0, 1].
+    pub shrink_rate: f32,
     /// Shrink each smoothed residual towards zero by its estimated
     /// signal-to-(signal + noise) power ratio (default true).
     pub shrink: bool,
@@ -80,6 +89,7 @@ impl Default for NonRigidConfig {
             min_quality_ratio: 0.5,
             outlier_px: 1.0,
             temporal_alpha: 0.5,
+            shrink_rate: 0.05,
             shrink: true,
         }
     }
@@ -158,6 +168,12 @@ pub struct MotionConfig {
     /// chained onto its shift) blended with the template estimate; 0
     /// (default) disables it.
     pub anchor_weight: f32,
+    /// Rate of the running brightness / quality statistics, per frame, in
+    /// (0, 1] (default 0.02).
+    pub stats_rate: f32,
+    /// Rate of the running moments behind the static-fraction weights, per
+    /// frame, in (0, 1] (default 0.001).
+    pub weight_rate: f32,
     /// Non-rigid refinement; `None` (default) for rigid only.
     pub nonrigid: Option<NonRigidConfig>,
     /// Resampling kernel for the corrected frame (default bicubic).
@@ -182,6 +198,8 @@ impl Default for MotionConfig {
             variance_weighting: false,
             anomaly_threshold: 6.0,
             anchor_weight: 0.0,
+            stats_rate: 0.02,
+            weight_rate: 1.0 / 1000.0,
             nonrigid: None,
             interpolation: Interpolation::Bicubic,
         }
@@ -212,6 +230,10 @@ impl MotionConfig {
         if !(0.0..=1.0).contains(&self.anchor_weight) {
             return bad("anchor_weight must be in [0, 1]");
         }
+        let rate = |r: f32| r > 0.0 && r <= 1.0;
+        if !(rate(self.stats_rate) && rate(self.weight_rate)) {
+            return bad("stats_rate and weight_rate must be in (0, 1]");
+        }
         if let Some(nr) = &self.nonrigid {
             if nr.grid.0 < 2 || nr.grid.1 < 2 || nr.grid.0 > 16 || nr.grid.1 > 16 {
                 return bad("nonrigid grid must be between 2x2 and 16x16");
@@ -221,6 +243,9 @@ impl MotionConfig {
             }
             if !(nr.temporal_alpha > 0.0 && nr.temporal_alpha <= 1.0) {
                 return bad("temporal_alpha must be in (0, 1]");
+            }
+            if !rate(nr.shrink_rate) {
+                return bad("shrink_rate must be in (0, 1]");
             }
             if nr.outlier_px.is_nan()
                 || nr.outlier_px <= 0.0
@@ -414,11 +439,11 @@ impl Tracker {
     /// barely moves the statistics while a lasting step (a brightness level
     /// change after a file boundary, say) is still followed within a few
     /// dozen frames instead of locking every later frame out.
-    fn update(&mut self, v: f32, k: f32) {
+    fn update(&mut self, v: f32, k: f32, rate: f32) {
         let lim = k * self.dev.max(self.floor);
         let d = (v - self.mean).clamp(-lim, lim);
-        self.mean += STATS_RATE * d;
-        self.dev += STATS_RATE * (d.abs() - self.dev);
+        self.mean += rate * d;
+        self.dev += rate * (d.abs() - self.dev);
     }
 }
 
@@ -572,8 +597,8 @@ impl Patches {
             // Noise variance from frame-to-frame differences (the deformation
             // itself changes over many frames), total power around zero.
             let d = r - self.prev_raw[i];
-            self.noise_var[i] += SHRINK_RATE * (0.5 * d * d - self.noise_var[i]);
-            self.power[i] += SHRINK_RATE * (r * r - self.power[i]);
+            self.noise_var[i] += self.cfg.shrink_rate * (0.5 * d * d - self.noise_var[i]);
+            self.power[i] += self.cfg.shrink_rate * (r * r - self.power[i]);
             self.prev_raw[i] = r;
         }
         // Wiener-style shrinkage towards zero (rigid): keep the smoothed
@@ -1807,8 +1832,10 @@ impl MotionCorrector {
 
         // Statistics follow every frame (winsorised); the template only
         // normal ones.
-        eng.brightness.update(brightness, cfg.anomaly_threshold);
-        eng.quality.update(reg.ncc, cfg.anomaly_threshold);
+        eng.brightness
+            .update(brightness, cfg.anomaly_threshold, cfg.stats_rate);
+        eng.quality
+            .update(reg.ncc, cfg.anomaly_threshold, cfg.stats_rate);
         if !anomalous && eng.strategy != TemplateStrategy::Frozen {
             // The crop is aligned to within `rel`; finish with the sub-pixel
             // part. The non-rigid field is deliberately left out: folding the
@@ -1832,8 +1859,8 @@ impl MotionCorrector {
                     .zip(eng.m2.iter_mut())
                     .zip(&eng.warped_roi)
                 {
-                    *m1 += WEIGHT_RATE * (v - *m1);
-                    *m2 += WEIGHT_RATE * (v * v - *m2);
+                    *m1 += cfg.weight_rate * (v - *m1);
+                    *m2 += cfg.weight_rate * (v * v - *m2);
                 }
             }
             if dual {

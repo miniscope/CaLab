@@ -15,7 +15,10 @@
  * `daq/` or its `daq/Miniscope/`. A directory with no AVIs is searched for
  * one `Miniscope` folder, so each of those resolves to the same recording.
  *
- * `--fps` defaults to the recording's metadata (20 without any). `--start N`
+ * `--fps` is the send rate; it defaults to the recording's own frame rate (its
+ * timestamps or metadata; a recording without one needs `--fps`). The hello
+ * message reports the recording's frame rate when it has one, so a stream sent
+ * faster than real time keeps its durations; else the send rate. `--start N`
  * begins at recording frame N, `--frames N` stops after N frames, and `--loop`
  * wraps from the last frame back to the first until stopped (the frame index
  * the app sees keeps counting up, as a real acquisition's does).
@@ -118,7 +121,9 @@ const files = await Promise.all(
 );
 const source = await FrameSource.open(entriesFromFiles(files));
 const info = source.info;
-const fps = fpsArg !== undefined ? Number(fpsArg) : (info.fps ?? 20);
+const fps = fpsArg !== undefined ? Number(fpsArg) : info.fps;
+if (fps === null)
+  fail('the recording has no frame rate (timeStamps.csv, metaData.json): pass --fps');
 if (!(fps > 0)) fail(`invalid --fps ${fpsArg}`);
 if (!(startFrame >= 0 && startFrame < info.frameCount)) {
   fail(`--start ${startFrame} is outside the recording (${info.frameCount} frames)`);
@@ -166,7 +171,7 @@ async function stream(socket, id) {
       width: info.width,
       height: info.height,
       bitDepth: info.bitDepth,
-      fps,
+      fps: info.fps ?? fps,
       fourcc: info.fourcc,
       bottomUp: info.bottomUp,
       name: recordingName,

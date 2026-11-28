@@ -1,6 +1,5 @@
 {
   "fps": 20.0,
-  "legacy_frame_fps": 20.0,
   "frame": [600, 600],
   "cell_diameter": {
     "px": 10.0,
@@ -17,6 +16,7 @@
     "hot_pixel_k_sigma": 5.0,
     "background_boxcar": 5,
     "background_relax_frames": 2400.0,
+    "noise_eta": 0.0020000000949949026,
     "flatten_cell_diameter_px": 10.0,
     "flatten_sigma_px": 20.0
   },
@@ -25,6 +25,8 @@
     "template_tau": 400.0,
     "template_refresh": 20,
     "warmup_frames": 200,
+    "stats_rate": 0.019999999552965164,
+    "weight_rate": 0.0010000000474974513,
     "nonrigid": null,
     "session_fix": true
   },
@@ -50,6 +52,9 @@
     "commit_interval_frames": 100,
     "reject_cooldown_frames": 400,
     "event_frames": 3,
+    "ledger_base_rate": 0.019999999552965164,
+    "ledger_scale_rate": 0.009999999776482582,
+    "ledger_max_freeze_frames": 100,
     "probation_frames": 4800,
     "probe_gap_frames": 100,
     "stats_half_life_frames": 6000,

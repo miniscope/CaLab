@@ -14,7 +14,7 @@
 //! optional `params_version`); a key that is not a params field is an
 //! error, since an ignored key in an eval arm is a wrong measurement.
 
-use calab_cala::params::loose::{legacy_seconds, set_diameter_fixed_ring};
+use calab_cala::params::loose::{frames_to_seconds, set_diameter_fixed_ring};
 use calab_cala::params::migrate::migrate;
 use calab_cala::params::{CalaParams, PARAMS_VERSION};
 use serde_json::{json, Value};
@@ -216,10 +216,11 @@ fn choice(flag: &str, raw: &str, allowed: &[(&str, &str)]) -> Value {
     json!(to)
 }
 
-/// Apply one config flag. `base` holds the params before the flags (for
-/// the frame rate that frame counts convert at).
+/// Apply one config flag. `base` holds the params before the flags: a
+/// frame count converts at its `time.fps_override`, else at `fps`.
 fn apply_flag(v: &mut Value, base: &CalaParams, fps: f64, flag: &str, raw: &str) {
-    let secs = |frames: Value| json!(legacy_seconds(base, fps, frames.as_f64().unwrap()));
+    let fps = base.time.fps_override.unwrap_or(fps);
+    let secs = |frames: Value| json!(frames_to_seconds(fps, frames.as_f64().unwrap()));
     let rule = &[("legacy", "legacy"), ("split-half", "split_half")];
     match flag {
         "--cell-diameter" => {
@@ -402,7 +403,7 @@ mod tests {
     fn frame_counts_round_trip() {
         use calab_cala::params::resolve::{resolve, Context};
         let ctx = Context {
-            fps: 30.0,
+            fps: Some(30.0),
             frame: [64, 64],
         };
         for n in [1u64, 3, 400, 2400, 2999, 3000, 4800, 6000, 9601, 123_457] {

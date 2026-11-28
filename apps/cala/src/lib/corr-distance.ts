@@ -255,7 +255,8 @@ export interface CorrInput {
  */
 export function computeCorrDistance(input: CorrInput): CorrDistanceResult {
   const { traces, cells, frames } = input;
-  const win = Math.max(2, Math.round(HP_SECONDS * (input.fps > 0 ? input.fps : 20)));
+  if (!(input.fps > 0)) throw new RangeError(`Frame rate ${input.fps} is not positive.`);
+  const win = Math.max(2, Math.round(HP_SECONDS * input.fps));
   const minFrames = MIN_FRAMES_FACTOR * win;
   const x = new Float64Array(frames);
   const y = new Float64Array(frames);

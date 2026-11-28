@@ -79,7 +79,7 @@ impl ResolvedParams {
 }
 
 /// Resolve a params layer (a partial params object, JSON; keys it leaves
-/// out keep their default) for a recording, `context` = `{"fps": Hz,
+/// out keep their default) for a recording, `context` = `{"fps": Hz or null,
 /// "frame": [width, height]}`. Fails with `[{pointer, message}]` on a key
 /// that is not a params field, a value of the wrong type, or params that
 /// do not resolve.

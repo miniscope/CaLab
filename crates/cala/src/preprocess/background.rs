@@ -43,8 +43,8 @@
 //!   The leak must be slow next to sustained activity, which it would
 //!   otherwise absorb: a cell held on for `d` frames lifts its own floor by a
 //!   fraction ≈ d/relax_frames of its amplitude, and the floor snaps back down
-//!   as soon as the cell returns to rest. Default `relax_frames` = 2400
-//!   (120 s at 20 fps): a burst of `d` frames loses about `d / relax_frames` of
+//!   as soon as the cell returns to rest. Default relaxation time
+//!   [`DEFAULT_RELAX_S`] = 120 s: a burst of `d` frames loses about `d / relax_frames` of
 //!   its amplitude at its end, while a baseline rise is 95 % tracked after
 //!   3 · `relax_frames`.
 //!   `relax_frames = 0` disables the leak (pure running minimum).
@@ -69,8 +69,6 @@ pub const DEFAULT_BOXCAR: usize = 5;
 pub const DEFAULT_RELAX_S: f32 = 120.0;
 /// Pixels per block of the fused update loop.
 const BLOCK: usize = 1024;
-/// Default frame rate used when none is given.
-pub const DEFAULT_FPS: f32 = 20.0;
 
 /// Settings for [`RunningMinBackground`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -83,21 +81,10 @@ pub struct BackgroundConfig {
     pub snapshot_every: u32,
 }
 
-impl Default for BackgroundConfig {
-    fn default() -> BackgroundConfig {
-        BackgroundConfig::for_fps(DEFAULT_FPS)
-    }
-}
-
 impl BackgroundConfig {
-    /// Defaults with the relaxation time converted at `fps` (falls back to
-    /// [`DEFAULT_FPS`] for a non-positive or non-finite rate).
+    /// Defaults with the relaxation time converted at `fps` (Hz, positive
+    /// and finite).
     pub fn for_fps(fps: f32) -> BackgroundConfig {
-        let fps = if fps.is_finite() && fps > 0.0 {
-            fps
-        } else {
-            DEFAULT_FPS
-        };
         BackgroundConfig {
             boxcar: DEFAULT_BOXCAR,
             relax_frames: DEFAULT_RELAX_S * fps,
@@ -589,7 +576,7 @@ mod tests {
 
     #[test]
     fn recovers_static_floor_and_ignores_flash_and_dim_frame() {
-        let cfg = BackgroundConfig::default();
+        let cfg = BackgroundConfig::for_fps(20.0);
         let floor = run(&cfg, 3000, |t| match t {
             1000 => 15.0 + 40.0, // bright flash
             2000 => 15.0 - 40.0, // dim frame
@@ -607,11 +594,11 @@ mod tests {
         let level = |t: usize| if t < 500 { 20.0 } else { 40.0 };
         let pure = BackgroundConfig {
             relax_frames: 0.0,
-            ..BackgroundConfig::default()
+            ..BackgroundConfig::for_fps(20.0)
         };
         let leaky = BackgroundConfig {
             relax_frames: 300.0,
-            ..BackgroundConfig::default()
+            ..BackgroundConfig::for_fps(20.0)
         };
         let f_pure = run(&pure, 2000, level);
         let f_leaky = run(&leaky, 2000, level);
@@ -629,10 +616,10 @@ mod tests {
     fn pure_minimum_keeps_sinking_leaky_is_stationary() {
         let pure = BackgroundConfig {
             relax_frames: 0.0,
-            ..BackgroundConfig::default()
+            ..BackgroundConfig::for_fps(20.0)
         };
         let f_pure = run(&pure, 6000, |_| 0.0);
-        let f_leaky = run(&BackgroundConfig::default(), 6000, |_| 0.0);
+        let f_leaky = run(&BackgroundConfig::for_fps(20.0), 6000, |_| 0.0);
         assert!(
             f_pure[5999] < f_pure[999] - 0.2,
             "{} vs {}",
@@ -647,7 +634,7 @@ mod tests {
         let dims = Dims::new(5, 4).unwrap();
         let cfg = BackgroundConfig {
             snapshot_every: 7,
-            ..BackgroundConfig::default()
+            ..BackgroundConfig::for_fps(20.0)
         };
         let mut bg = RunningMinBackground::new(dims, &cfg).unwrap();
         let mut rng = Lcg(9);
@@ -683,18 +670,18 @@ mod tests {
         let dims = Dims::new(3, 3).unwrap();
         let bad = BackgroundConfig {
             boxcar: 0,
-            ..BackgroundConfig::default()
+            ..BackgroundConfig::for_fps(20.0)
         };
         assert!(RunningMinBackground::new(dims, &bad).is_err());
         let bad = BackgroundConfig {
             relax_frames: 0.5,
-            ..BackgroundConfig::default()
+            ..BackgroundConfig::for_fps(20.0)
         };
         assert!(RunningMinBackground::new(dims, &bad).is_err());
-        let mut bg = RunningMinBackground::new(dims, &BackgroundConfig::default()).unwrap();
+        let mut bg = RunningMinBackground::new(dims, &BackgroundConfig::for_fps(20.0)).unwrap();
         assert!(bg.process(&mut [0.0; 2]).is_err());
         let other =
-            RunningMinBackground::new(Dims::new(2, 2).unwrap(), &BackgroundConfig::default())
+            RunningMinBackground::new(Dims::new(2, 2).unwrap(), &BackgroundConfig::for_fps(20.0))
                 .unwrap();
         assert!(bg.restore(&other.state()).is_err());
     }
@@ -707,7 +694,7 @@ mod tests {
     #[test]
     fn masked_floor_uses_valid_samples_only() {
         let dims = Dims::new(1, 2).unwrap();
-        let cfg = BackgroundConfig::default();
+        let cfg = BackgroundConfig::for_fps(20.0);
         let mut masked = RunningMinBackground::new(dims, &cfg).unwrap();
         let mut plain = RunningMinBackground::new(dims, &cfg).unwrap();
         let mut rng = Lcg(3);

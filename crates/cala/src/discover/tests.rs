@@ -959,7 +959,7 @@ fn warm_start_is_a_visit_option() {
     use crate::params::resolve::Context;
     use crate::params::CalaParams;
     let ctx = Context {
-        fps: 20.0,
+        fps: Some(20.0),
         frame: [64, 64],
     };
     let on = CalaParams::default();
@@ -2245,7 +2245,7 @@ fn js_observe_with_background_levels_matches_native() {
         let params = crate::params::js::ResolvedParams::new(
             crate::params::CalaParams::default(),
             crate::params::resolve::Context {
-                fps: 20.0,
+                fps: Some(20.0),
                 frame: [N as u32, N as u32],
             },
         )
@@ -3228,7 +3228,7 @@ fn lookback_misuse_is_refused() {
     use crate::params::{CalaParams, ClusterUpdate};
     let fp = |p: &CalaParams| {
         let ctx = Context {
-            fps: 20.0,
+            fps: Some(20.0),
             frame: [N as u32, N as u32],
         };
         Engine::build(p, ctx).unwrap().slow_loop.fingerprint

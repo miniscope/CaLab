@@ -217,8 +217,43 @@ pub(crate) struct Evidence {
 const WARM: usize = 32;
 /// Median |z| of standard normal noise (its MAD), to four digits.
 const MAD_Z: f32 = 0.6745;
-/// Longest excursion (frames) during which the trackers stay frozen.
-const MAX_FREEZE: u32 = 100;
+/// Step horizon of the baseline tracker, s: its step is
+/// `SlowLoopConfig::ledger_base_rate` = 1 / (this × fps) noise scales.
+pub const LEDGER_BASE_STEP_S: f32 = 2.5;
+/// Step horizon of the scale tracker, s: its relative step is
+/// `SlowLoopConfig::ledger_scale_rate` = 1 / (this × fps).
+pub const LEDGER_SCALE_STEP_S: f32 = 5.0;
+/// Longest excursion during which the trackers stay frozen, s
+/// (`SlowLoopConfig::ledger_max_freeze_frames`).
+pub const LEDGER_MAX_FREEZE_S: f64 = 5.0;
+
+/// The ledger's event rule and tracker steps, per frame.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LedgerRule {
+    /// A run's peak must reach this many σ to count.
+    pub event_z: f32,
+    /// A run must last this many frames to count.
+    pub event_frames: u32,
+    /// Baseline step per frame, in noise scales, in (0, 1].
+    pub base_rate: f32,
+    /// Relative scale step per frame, in (0, 1).
+    pub scale_rate: f32,
+    /// Longest excursion (frames) during which the trackers stay frozen.
+    pub max_freeze: u32,
+}
+
+impl LedgerRule {
+    /// The rule of the slow loop's `cfg`.
+    pub fn of(cfg: &super::SlowLoopConfig) -> LedgerRule {
+        LedgerRule {
+            event_z: cfg.event_z,
+            event_frames: cfg.event_frames,
+            base_rate: cfg.ledger_base_rate,
+            scale_rate: cfg.ledger_scale_rate,
+            max_freeze: cfg.ledger_max_freeze_frames,
+        }
+    }
+}
 
 impl Evidence {
     pub fn new() -> Evidence {
@@ -248,7 +283,8 @@ impl Evidence {
 
     /// One frame: `u` the unconstrained coordinate, `floor` its noise σ
     /// from the noise map alone (the scale never drops below it).
-    pub fn update(&mut self, u: f32, floor: f32, event_z: f32, event_frames: u32) {
+    pub fn update(&mut self, u: f32, floor: f32, rule: &LedgerRule) {
+        let (event_z, event_frames) = (rule.event_z, rule.event_frames);
         if !u.is_finite() {
             return;
         }
@@ -279,15 +315,15 @@ impl Evidence {
         // Baseline: a median tracker; scale: a median-|z| tracker (`MAD_Z` σ
         // for Gaussian noise). Both are frozen during a positive excursion
         // beyond 2 σ, so a calcium transient does not lift the baseline nor
-        // inflate the scale, but only for `MAX_FREEZE` frames, so a
+        // inflate the scale, but only for `max_freeze` frames, so a
         // baseline that ended up too low recovers.
-        let frozen = z >= 2.0 && self.run_len < MAX_FREEZE;
+        let frozen = z >= 2.0 && self.run_len < rule.max_freeze;
         if !frozen {
-            self.base += 0.02 * s * z.clamp(-1.0, 1.0);
+            self.base += rule.base_rate * s * z.clamp(-1.0, 1.0);
             if z.abs() > MAD_Z {
-                self.scale = s * 1.01;
+                self.scale = s * (1.0 + rule.scale_rate);
             } else {
-                self.scale = (s * 0.99).max(floor);
+                self.scale = (s * (1.0 - rule.scale_rate)).max(floor);
             }
         }
         // Runs above +2 σ / below −2 σ.

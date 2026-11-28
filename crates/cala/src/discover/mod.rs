@@ -268,6 +268,7 @@ pub use counters::VisitRecord;
 pub use counters::{DueDiag, ReplayStats, ReservoirPlan, SettleStats, SlowStats};
 pub use ledger::{
     CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts, EditEvent, EditKind, TestEvent,
+    LEDGER_BASE_STEP_S, LEDGER_MAX_FREEZE_S, LEDGER_SCALE_STEP_S,
 };
 pub use lookback::{
     HeldOutRecord, LookBack, LookbackConfig, LookbackNext, LookbackOrder, LookbackOutcome,

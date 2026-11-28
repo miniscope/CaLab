@@ -578,7 +578,8 @@ export class BoundaryMonitor {
 
   constructor(o: MonitorOptions) {
     this.rules = o.rules ?? BOUNDARY_FLAG_RULES;
-    this.window = Math.max(1, Math.round(this.rules.windowS * (o.fps > 0 ? o.fps : 20)));
+    if (!(o.fps > 0)) throw new RangeError(`BoundaryMonitor: frame rate ${o.fps} is not positive.`);
+    this.window = Math.max(1, Math.round(this.rules.windowS * o.fps));
     this.starts = [0, ...o.boundaries];
     this.ends = [...o.boundaries, o.frames];
     // Windows of traces kept: aligned windows j >= 1 of every session, the

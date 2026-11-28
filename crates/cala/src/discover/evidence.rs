@@ -42,7 +42,7 @@ impl SlowLoop {
         }
         let ring = matches!(lib.background_model(), BackgroundModel::Ring { .. })
             && traces.background.len() == lib.len();
-        let (ez, ef) = (self.cfg.event_z, self.cfg.event_frames);
+        let rule = super::ledger::LedgerRule::of(&self.cfg);
         let lp = &self.lproj;
         let d = &self.resid.d;
         let mut work = 0u64;
@@ -78,7 +78,7 @@ impl SlowLoop {
             self.ledger
                 .entry(id)
                 .or_insert_with(Evidence::new)
-                .update(u, lp.floor[slot], ez, ef);
+                .update(u, lp.floor[slot], &rule);
         }
         self.work += work;
     }

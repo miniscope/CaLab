@@ -1,16 +1,13 @@
 //! [`resolve`]: params plus the recording's context to the engine's units.
 //!
 //! [`EngineView`] holds every engine value [`CalaParams`] sets, in the units
-//! the engine counts in: frames and pixels. Durations convert by one rule,
-//! [`frames`]. Two groups of durations exist:
-//!
-//! * converted at the recording's frame rate: the background relaxation and
-//!   the flat-field half-lives, first map and refit interval;
-//! * converted at `time.legacy_frame_fps` (default 20) when it is set: every
-//!   other duration, which the engine counts in fixed frames.
-//!
-//! The real-fps group is converted in the engine's f32 arithmetic
-//! ([`frames_f32`]), the expression of its `for_fps` functions.
+//! the engine counts in: frames, per-frame rates and pixels, all at the
+//! recording's frame rate (`time.fps_override`, else the file's; a
+//! recording without one is an error). Durations convert by [`frames`];
+//! the background relaxation and the flat-field half-lives, first map and
+//! refit interval use [`frames_f32`], the f32 expression of their engine's
+//! `for_fps` functions. The engine's per-frame rates come from time
+//! constants by [`per_frame_rate`] and [`half_life_weight`].
 //! [`super::engine::Engine`] builds the engine's configs from the view. The
 //! golden files in `crates/cala/tests/golden/` pin it at the default params,
 //! so a change of an engine value shows up as a diff there.
@@ -25,8 +22,9 @@ use super::{
 /// What [`resolve`] needs to know of the recording.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Context {
-    /// The recording's frame rate, Hz (before `time.fps_override`).
-    pub fps: f64,
+    /// The recording's frame rate, Hz (before `time.fps_override`); `None`
+    /// when the recording does not give one (its timestamps and metadata).
+    pub fps: Option<f64>,
     /// Frame width and height, px.
     pub frame: [u32; 2],
 }
@@ -74,8 +72,6 @@ pub struct CellDiameter {
 pub struct EngineView {
     /// The frame rate in force, Hz.
     pub fps: f64,
-    /// The rate the fixed-frame durations are converted at, Hz.
-    pub legacy_frame_fps: f64,
     pub frame: [u32; 2],
     pub cell_diameter: CellDiameter,
     pub preprocess: PreprocessView,
@@ -103,6 +99,8 @@ pub struct PreprocessView {
     pub background_boxcar: u64,
     /// Frames, unrounded (the engine keeps a float).
     pub background_relax_frames: f64,
+    /// Step of the noise map's median tracker, per frame.
+    pub noise_eta: f64,
     pub flatten_cell_diameter_px: f64,
     pub flatten_sigma_px: f64,
 }
@@ -114,6 +112,10 @@ pub struct MotionView {
     pub template_tau: f64,
     pub template_refresh: u64,
     pub warmup_frames: u64,
+    /// Rate of the running brightness / quality statistics, per frame.
+    pub stats_rate: f64,
+    /// Rate of the running static-fraction moments, per frame.
+    pub weight_rate: f64,
     /// `None`: rigid only.
     pub nonrigid: Option<NonRigidView>,
     pub session_fix: bool,
@@ -124,6 +126,10 @@ pub struct MotionView {
 pub struct NonRigidView {
     pub grid: [u32; 2],
     pub max_patch_shift: f64,
+    /// Weight of the new residual in the temporal smoother, per frame.
+    pub temporal_alpha: f64,
+    /// Rate of the running per-patch noise and power, per frame.
+    pub shrink_rate: f64,
 }
 
 /// `OnlineFlatFieldConfig` values.
@@ -153,6 +159,11 @@ pub struct SlowLoopView {
     pub commit_interval_frames: u32,
     pub reject_cooldown_frames: u64,
     pub event_frames: u64,
+    /// Evidence ledger: baseline step per frame, in noise scales.
+    pub ledger_base_rate: f64,
+    /// Evidence ledger: relative noise-scale step per frame.
+    pub ledger_scale_rate: f64,
+    pub ledger_max_freeze_frames: u64,
     pub probation_frames: u64,
     pub probe_gap_frames: u64,
     pub stats_half_life_frames: u64,
@@ -244,6 +255,26 @@ pub fn frames(seconds: f64, fps: f64) -> u64 {
     }
 }
 
+/// The fewest frames of an event (`discover.event_s`), whatever the frame
+/// rate: white noise makes a run of 3 frames above 2 σ about once in 10⁵
+/// frames, and fewer frames would let it make events.
+pub const EVENT_MIN_FRAMES: u64 = 3;
+
+/// The per-frame rate of an exponential tracker with time constant `tau_s`
+/// (s) at `fps` (Hz): `min(1, 1 / (τ × fps))`, in f32. A rate that is the
+/// reciprocal of a whole number of frames at some rate gives the same
+/// f32 as that literal there (1 / 500 is `0.002f32`).
+pub fn per_frame_rate(tau_s: f32, fps: f32) -> f32 {
+    (1.0 / (tau_s * fps)).min(1.0)
+}
+
+/// The per-frame weight of an exponential smoother whose half-life is
+/// `half_life_s` (s) at `fps` (Hz): `1 − 2^(−1 / (h × fps))`, in f32
+/// (0.5 when the half-life is one frame).
+pub fn half_life_weight(half_life_s: f32, fps: f32) -> f32 {
+    1.0 - (-1.0 / (half_life_s * fps)).exp2()
+}
+
 /// [`frames`] in the engine's f32 arithmetic (`round(s × fps)` of two
 /// f32), for the durations the engine has always converted at the
 /// recording's frame rate: the same expression as its `for_fps`
@@ -300,16 +331,24 @@ fn um_per_px(p: &CalaParams, frame: [u32; 2]) -> Option<f64> {
 
 /// `p` in the engine's units for a recording described by `ctx`.
 pub fn resolve(p: &CalaParams, ctx: Context) -> Result<EngineView, ResolveError> {
-    let fps = p.time.fps_override.unwrap_or(ctx.fps);
+    let err = |message: String| ResolveError {
+        pointer: "/time/fps_override".into(),
+        message,
+    };
+    let fps = p.time.fps_override.or(ctx.fps).ok_or_else(|| {
+        err(
+            "the recording has no frame rate (no usable timeStamps.csv or metaData.json); \
+             set the frame rate override"
+                .into(),
+        )
+    })?;
     if !(fps.is_finite() && fps > 0.0) {
-        return Err(ResolveError {
-            pointer: "/time/fps_override".into(),
-            message: format!("the frame rate must be positive, got {fps}"),
-        });
+        return Err(err(format!("the frame rate must be positive, got {fps}")));
     }
-    let legacy = p.time.legacy_frame_fps.unwrap_or(fps);
-    let lf = |s: f64| frames(s, legacy);
+    let lf = |s: f64| frames(s, fps);
     let rf = |s: f64| frames_f32(s, fps);
+    let fps32 = fps as f32;
+    let rate = |tau_s: f32| f64::from(per_frame_rate(tau_s, fps32));
     let d = cell_diameter(p, ctx.frame)?;
     let dpx = d.px;
     let s = &p.scales;
@@ -319,7 +358,6 @@ pub fn resolve(p: &CalaParams, ctx: Context) -> Result<EngineView, ResolveError>
     let dis = &p.discover;
     Ok(EngineView {
         fps,
-        legacy_frame_fps: legacy,
         frame: ctx.frame,
         cell_diameter: d,
         preprocess: PreprocessView {
@@ -331,7 +369,8 @@ pub fn resolve(p: &CalaParams, ctx: Context) -> Result<EngineView, ResolveError>
             fov_margin_px: pre.fov.margin_px,
             hot_pixel_k_sigma: pre.hot_pixel_k_sigma,
             background_boxcar: lf(pre.background.boxcar_s),
-            background_relax_frames: f64::from(pre.background.relax_s as f32 * fps as f32),
+            background_relax_frames: f64::from(pre.background.relax_s as f32 * fps32),
+            noise_eta: rate(crate::preprocess::noise::TRACKER_STEP_S),
             flatten_cell_diameter_px: dpx,
             flatten_sigma_px: s.flatten_sigma_px.unwrap_or(s.flatten_sigma_per_d * dpx),
         },
@@ -340,9 +379,16 @@ pub fn resolve(p: &CalaParams, ctx: Context) -> Result<EngineView, ResolveError>
             template_tau: lf(m.template_tau_s) as f64,
             template_refresh: lf(m.template_refresh_s),
             warmup_frames: lf(m.warmup_s),
+            stats_rate: rate(crate::motion::corrector::STATS_TAU_S),
+            weight_rate: rate(crate::motion::corrector::WEIGHT_TAU_S),
             nonrigid: m.nonrigid.enabled.then_some(NonRigidView {
                 grid: [m.nonrigid.grid, m.nonrigid.grid],
                 max_patch_shift: m.nonrigid.max_patch_shift_px,
+                temporal_alpha: f64::from(half_life_weight(
+                    crate::motion::corrector::TEMPORAL_HALF_LIFE_S,
+                    fps32,
+                )),
+                shrink_rate: rate(crate::motion::corrector::SHRINK_TAU_S),
             }),
             session_fix: m.session_fix,
         },
@@ -370,7 +416,10 @@ pub fn resolve(p: &CalaParams, ctx: Context) -> Result<EngineView, ResolveError>
             merge_corr: dis.merge.corr,
             commit_interval_frames: dis.commit_interval_frames,
             reject_cooldown_frames: lf(dis.reject_cooldown_s),
-            event_frames: lf(dis.event_s),
+            event_frames: lf(dis.event_s).max(EVENT_MIN_FRAMES),
+            ledger_base_rate: rate(crate::discover::LEDGER_BASE_STEP_S),
+            ledger_scale_rate: rate(crate::discover::LEDGER_SCALE_STEP_S),
+            ledger_max_freeze_frames: lf(crate::discover::LEDGER_MAX_FREEZE_S),
             probation_frames: lf(dis.probation_s),
             probe_gap_frames: lf(dis.probe_gap_s),
             stats_half_life_frames: lf(dis.stats_half_life_s),
@@ -433,8 +482,9 @@ pub fn resolve(p: &CalaParams, ctx: Context) -> Result<EngineView, ResolveError>
     })
 }
 
-/// Frame rates of the golden files: 20 (where both groups of durations
-/// agree) and 30 (where they differ).
+/// Frame rates of the golden files: 20 (the rate the defaults were tuned
+/// at, where every frame count and rate is the engine's own default) and
+/// 30.
 pub const GOLDEN_FPS: [u32; 2] = [20, 30];
 
 /// The frame of the golden files, px.
@@ -451,7 +501,7 @@ pub fn golden_text(fps: u32) -> String {
     let view = resolve(
         &CalaParams::default(),
         Context {
-            fps: f64::from(fps),
+            fps: Some(f64::from(fps)),
             frame: GOLDEN_FRAME,
         },
     )
