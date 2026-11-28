@@ -78,6 +78,8 @@
 
   .compact-header__actions {
     flex-wrap: wrap;
+    flex-shrink: 1;
+    min-width: 0;
   }
 }
 

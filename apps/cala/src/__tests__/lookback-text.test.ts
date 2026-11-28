@@ -165,9 +165,10 @@ describe('Background settle', () => {
 
 describe('leaving a result', () => {
   it('warns before dropping an unexported result only', () => {
-    const o = { extractDone: true, exported: false, multiSession: false };
+    const o = { extractDone: true, exported: false, written: false };
     expect(leaveWarning(o)).toContain('not been exported');
     expect(leaveWarning({ ...o, exported: true })).toBeNull();
+    expect(leaveWarning({ ...o, written: true })).toBeNull();
     expect(leaveWarning({ ...o, extractDone: false })).toBeNull();
   });
 });

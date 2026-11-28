@@ -40,6 +40,18 @@ export type Bindings = Record<string, BoundSetting>;
 /** Where a value comes from, as the form shows it. */
 export type ParamSource = 'default' | RequestSource;
 
+/** The tag of a layer under the sheet's: the project's defaults, the plan step, the stream. */
+export type BaseTag = 'project' | 'step' | 'stream';
+
+/**
+ * A layer under the loaded file and the sheet's edits (`apps/cala/docs/projects.md`, "Settings layers"): the project file's
+ * `defaults`, the plan step's `params`, or the stream's `overrides`. Lowest first.
+ */
+export interface BaseLayer {
+  tag: BaseTag;
+  layer: ParamsLayer;
+}
+
 const DIAMETER_PX = '/scales/cell_diameter_px';
 const DIAMETER_UM = '/scales/expected_cell_diameter_um';
 
@@ -131,12 +143,40 @@ export function runLayer(requested: ParamsLayer): ParamsLayer {
   return setAt(requested as Record<string, unknown>, DIAMETER_PX, null) as ParamsLayer;
 }
 
-/** The sheet's params: a loaded file, the edits over it, and where each value comes from. */
+/**
+ * The sheet's params: the project's layers (`setBase`), a loaded file over them, the edits over
+ * that, and where each value comes from.
+ */
 export function createParamLayers(bindings: Bindings = {}) {
   const [file, setFile] = createSignal<LoadedConfig | null>(null);
   const [ui, setUi] = createSignal<ParamsLayer>({});
+  const [base, setBaseSig] = createSignal<readonly BaseLayer[]>([]);
   const defaults = schemaDefaults();
   const defaultAt = (ptr: string): unknown => getAt(defaults, ptr);
+
+  /** The value of the highest base layer that sets `ptr` (null: none does). */
+  const baseAt = (
+    ptr: string,
+    layers: readonly BaseLayer[] = base(),
+  ): { value: unknown; tag: BaseTag } | null => {
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const v = getAt(layers[i].layer, ptr);
+      if (v !== undefined) return { value: v, tag: layers[i].tag };
+    }
+    return null;
+  };
+  /** What a field falls back to without a file or an edit: its base value, else its default. */
+  const fallback = (ptr: string, layers: readonly BaseLayer[] = base()): unknown => {
+    const b = baseAt(ptr, layers);
+    return b ? b.value : defaultAt(ptr);
+  };
+  /** The file's or the edits' value at `ptr` (undefined: neither sets it). */
+  const edited = (ptr: string): unknown => {
+    const u = getAt(ui(), ptr);
+    if (u !== undefined) return u;
+    const f = file();
+    return f ? getAt(f.layer, ptr) : undefined;
+  };
 
   /** The layered value and its tag (null: no layer sets it). */
   const layered = (ptr: string): { value: unknown; tag: RequestSource } | null => {
@@ -144,7 +184,8 @@ export function createParamLayers(bindings: Bindings = {}) {
     if (u !== undefined) return { value: u, tag: 'ui' };
     const f = file();
     const fv = f ? getAt(f.layer, ptr) : undefined;
-    return f && fv !== undefined ? { value: fv, tag: `file:${f.name}` } : null;
+    if (f && fv !== undefined) return { value: fv, tag: `file:${f.name}` };
+    return baseAt(ptr);
   };
 
   function value(ptr: string): unknown {
@@ -170,11 +211,20 @@ export function createParamLayers(bindings: Bindings = {}) {
     bindings[ptr]?.set(v);
   }
 
+  /**
+   * Back to the default: the edit and the file's value go. When a project layer sets the field
+   * to something else, the default is set here, over it (an explicit pin for this run).
+   */
   function reset(ptr: string): void {
     setUi((u) => deleteAt(u as Record<string, unknown>, ptr) as ParamsLayer);
     const f = file();
     if (f && getAt(f.layer, ptr) !== undefined) {
       setFile({ ...f, layer: deleteAt(f.layer as Record<string, unknown>, ptr) as ParamsLayer });
+    }
+    const b = baseAt(ptr);
+    if (b && !same(b.value, defaultAt(ptr))) {
+      set(ptr, defaultAt(ptr));
+      return;
     }
     bindings[ptr]?.set(defaultAt(ptr));
   }
@@ -187,7 +237,7 @@ export function createParamLayers(bindings: Bindings = {}) {
     if (prev) {
       for (const ptr of layerEntries(PARAMS_SCHEMA, prev.layer).keys()) {
         if (bindings[ptr] && getAt(cfg.layer, ptr) === undefined && getAt(ui(), ptr) === undefined)
-          bindings[ptr].set(defaultAt(ptr));
+          bindings[ptr].set(fallback(ptr));
       }
     }
     let u = ui() as Record<string, unknown>;
@@ -199,19 +249,55 @@ export function createParamLayers(bindings: Bindings = {}) {
     setFile(cfg);
   }
 
-  /** Back to the defaults: no file, no edits. */
+  /** Back to the project's values (the defaults when it sets none): no file, no edits. */
   function clear(): void {
     setFile(null);
     setUi({});
-    for (const [ptr, b] of Object.entries(bindings)) b.set(defaultAt(ptr));
+    for (const [ptr, b] of Object.entries(bindings)) b.set(fallback(ptr));
   }
 
-  /** Every value asked for (file, then edits), with the bound settings that differ from default. */
+  /**
+   * Use the project's layers for the run that starts next (empty: none). A bound setting that
+   * no file or edit sets follows them, unless it was changed elsewhere in the app since.
+   */
+  function setBase(layers: readonly BaseLayer[]): void {
+    const before = base();
+    for (const [ptr, b] of Object.entries(bindings)) {
+      if (edited(ptr) !== undefined) continue;
+      const was = fallback(ptr, before);
+      if (same(b.get(), was)) b.set(fallback(ptr, layers));
+    }
+    setBaseSig(layers);
+  }
+
+  /**
+   * The file's and the edits' values (with the bound settings changed from the project's
+   * values), for Save as project defaults.
+   */
+  function edits(): ParamsLayer {
+    let out: Record<string, unknown> = {};
+    for (const [ptr, v] of layerEntries(PARAMS_SCHEMA, requested())) {
+      const s = source(ptr);
+      if (s === 'ui' || s.startsWith('file:')) out = setAt(out, ptr, v);
+    }
+    return out as ParamsLayer;
+  }
+
+  /**
+   * Forget the file and the edits, keeping every bound setting as it is: called after they were
+   * saved into a project layer, which now gives the same values.
+   */
+  function dropEdits(): void {
+    setFile(null);
+    setUi({});
+  }
+
+  /** Every value asked for (project layers, file, then edits), with the bound settings that differ from default. */
   function requested(): ParamsLayer {
-    let out = mergeLayer(
-      (file()?.layer ?? {}) as Record<string, unknown>,
-      ui() as Record<string, unknown>,
-    );
+    let out: Record<string, unknown> = {};
+    for (const l of base()) out = mergeLayer(out, l.layer as Record<string, unknown>);
+    out = mergeLayer(out, (file()?.layer ?? {}) as Record<string, unknown>);
+    out = mergeLayer(out, ui() as Record<string, unknown>);
     for (const [ptr, b] of Object.entries(bindings)) {
       out = source(ptr) === 'default' ? deleteAt(out, ptr) : setAt(out, ptr, b.get());
     }
@@ -244,6 +330,11 @@ export function createParamLayers(bindings: Bindings = {}) {
 
   return {
     file,
+    /** The project's layers in force (lowest first). */
+    base,
+    setBase,
+    edits,
+    dropEdits,
     value,
     overridden,
     source,

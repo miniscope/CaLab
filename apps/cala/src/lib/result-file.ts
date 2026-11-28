@@ -268,6 +268,25 @@ async function traceReader(
   };
 }
 
+/**
+ * The run file a saved export carries (`meta_json.run`, format 8 on), or null when it is an
+ * older export. Throws with a readable message when the file is not a cala export.
+ */
+export async function exportRunFile(src: ZipSource): Promise<Record<string, unknown> | null> {
+  let zip: ZipArchive;
+  try {
+    zip = await ZipArchive.open(src);
+  } catch {
+    throw new Error('This is not a cala export (not an .npz file).');
+  }
+  if (!zip.has('meta_json.npy')) throw new Error('This is not a cala export (no meta_json).');
+  const meta = (await readJson(zip, 'meta_json')) as Record<string, unknown>;
+  const run = meta.run;
+  return typeof run === 'object' && run !== null && !Array.isArray(run)
+    ? (run as Record<string, unknown>)
+    : null;
+}
+
 /** Open a saved export (any format version). Throws with a readable message when it is not one. */
 export async function openResult(src: ZipSource, label = ''): Promise<LoadedResult> {
   const zip = await ZipArchive.open(src);

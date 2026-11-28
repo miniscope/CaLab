@@ -219,7 +219,7 @@ before/after contrast, not as absolute leak. The plot data is not in the export.
 
 A run can hold several recording sessions of one animal (`src/lib/sessions.ts`,
 `src/lib/session-run.ts`). The **library-flow mode** says how the stages above
-compose with the sessions. It is a run setting, chosen on the session list.
+compose with the sessions. It is the kind of a plan step, chosen in the project table.
 
 | Mode         | Discover                                        | Extract                          | Cell ids              |
 | ------------ | ----------------------------------------------- | -------------------------------- | --------------------- |
@@ -248,12 +248,15 @@ compose with the sessions. It is a run setting, chosen on the session list.
   and the Final settle) and Extract on it before the next.
 - **Apply** is not built. It needs a starting library from a file (the
   `LibrarySource` `file` variant below); `LibraryMode` has the slot.
-- A multi-session run is automatic. After Discover (and its Final settle) it
-  runs Extract, then writes the results. In
-  Separate mode it then opens the next session. A failed or cancelled stage
-  stops the automatic run. A session where Discover finds no cells is skipped
-  and marked so in the manifest.
-- A single folder with one recording stays a one-session run with no automation.
+- Every run is the run of a plan step and is automatic. After Discover (and its
+  Final settle) it runs Extract, then writes the results into its run folder
+  ([projects.md](projects.md)). In Separate mode it then opens the next session.
+  A failed or cancelled stage stops the automatic run. A session where Discover
+  finds no cells is skipped and marked so in the run file.
+- A single recording is a project of one session: its run is a Separate step
+  of one, automatic like any other. A live stream is the same with a live
+  stream as its one session; when it has no Extract (no factors) its run writes
+  the traces solved as the frames came in.
 
 ### Boundaries
 
@@ -356,7 +359,7 @@ recording; the few fixed choices are in `BOUNDARY_FLAG_RULES` (one place).
 - **Where it shows.** A History event ("boundary check": a `warning` for a
   warning or failed boundary, a `setting` for ok) each time a verdict changes;
   the boundary line on the cell trace (orange for a warning, vermillion with a
-  "!" for failed); a badge in the multi-session run's list; the export
+  "!" for failed); a badge in the run's session list; the export
   (`meta_json.session.boundary`), the run file (`calab-run.json`,
   `results[].boundary`) and the project index (`runs[].streams[].boundary`), so the
   session table and View results show it.

@@ -37,6 +37,7 @@ export type AnalyticsEventName =
   | 'results_exported'
   | 'webgpu_info'
   | 'device_info'
+  | 'project_opened'
   // Opt-in beta tester tag (the only user-typed field; see tester-tag.ts).
   | 'tester_tag';
 

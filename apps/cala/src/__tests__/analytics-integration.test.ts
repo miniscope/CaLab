@@ -94,7 +94,7 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe('event sequence', () => {
-  it('reports webgpu_info once, then import, start and finish of a single run', async () => {
+  it('reports webgpu_info once, then import, start and finish of one recording', async () => {
     const h = harness();
     await vi.advanceTimersByTimeAsync(0);
     expect(h.calls).toEqual([['webgpu_info', { adapter: 'hardware', vendor: 'nvidia' }]]);
@@ -112,7 +112,7 @@ describe('event sequence', () => {
       'run_started',
       {
         stage: 'discover',
-        mode: 'single',
+        mode: 'separate',
         sessions: 1,
         frames: 6000,
         fps: 30,
@@ -136,7 +136,7 @@ describe('event sequence', () => {
       duration_s: 60,
       median_fps: 200,
       cells: 42,
-      mode: 'single',
+      mode: 'separate',
     });
     expect(fin[1]).not.toHaveProperty('peak_wasm_mb');
     expect(h.calls).toHaveLength(4);
@@ -171,7 +171,7 @@ describe('event sequence', () => {
 
   it('multi-session joint run: one import, boundary summary and export at the end', async () => {
     const h = harness();
-    const plan = { settings: { mode: 'joint' as const }, sessions: [1, 2, 3] };
+    const plan = { kind: 'joint' as const, sessions: [1, 2, 3] };
     h.setPlan(plan);
     h.setInfo(INFO);
     h.setInfo({ ...INFO });
@@ -200,7 +200,7 @@ describe('event sequence', () => {
 
   it('a Separate plan reports one session per run, with the plan size apart', async () => {
     const h = harness();
-    h.setPlan({ settings: { mode: 'separate' as const }, sessions: [1, 2, 3, 4] });
+    h.setPlan({ kind: 'separate' as const, sessions: [1, 2, 3, 4] });
     h.setInfo(INFO);
     h.setRuns([run({})]);
     await vi.advanceTimersByTimeAsync(0);
@@ -212,13 +212,34 @@ describe('event sequence', () => {
     h.dispose();
   });
 
-  it('a single folder carries no plan fields', async () => {
+  it('reports project_opened once per open, with counts and flags only', async () => {
+    const [proj, setProj] = createSignal<{
+      sessions: number;
+      live: boolean;
+      existing: boolean;
+    } | null>(null);
+    const h = harness({ project: proj });
+    const one = { sessions: 1, live: false, existing: false };
+    setProj(one);
+    setProj(one);
+    setProj({ sessions: 3, live: false, existing: true });
+    setProj({ sessions: 1, live: true, existing: false });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.filter((c) => c[0] === 'project_opened')).toEqual([
+      ['project_opened', { sessions: 1, live: false, existing: false }],
+      ['project_opened', { sessions: 3, live: false, existing: true }],
+      ['project_opened', { sessions: 1, live: true, existing: false }],
+    ]);
+    h.dispose();
+  });
+
+  it('a recording opened but not run yet carries no plan fields', async () => {
     const h = harness();
     h.setInfo(INFO);
     h.setRuns([run({})]);
     await vi.advanceTimersByTimeAsync(0);
     const data = h.calls.find((c) => c[0] === 'run_started')![1];
-    expect(data).toMatchObject({ mode: 'single', sessions: 1 });
+    expect(data).toMatchObject({ mode: 'separate', sessions: 1 });
     expect(data).not.toHaveProperty('plan_sessions');
     expect(data).not.toHaveProperty('refine_runs');
     h.dispose();
@@ -243,7 +264,7 @@ describe('event sequence', () => {
 describe('payload allowlist', () => {
   it('every payload key of a full run is in its event allowlist', async () => {
     const h = harness({ heapBytes: () => 300 * 1048576 });
-    h.setPlan({ settings: { mode: 'joint' as const }, sessions: [1, 2] });
+    h.setPlan({ kind: 'joint' as const, sessions: [1, 2] });
     h.setInfo(INFO);
     h.setRuns([run({})]);
     h.setFps(50);

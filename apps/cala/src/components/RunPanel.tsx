@@ -23,7 +23,7 @@ import { StepClock } from '../lib/step-view.ts';
 import type { HistoryUi } from './HistoryPanel.tsx';
 import { FACTORS_LIVE_NOTE } from '../lib/factor-run.ts';
 import type { SettingsContext } from './DiscoverSettings.tsx';
-import { PreRunSheet, SettingsSummary } from './RunSettings.tsx';
+import { PreRunSheet, SettingsSummary, type ProjectParams } from './RunSettings.tsx';
 import { SidePanel } from './SidePanel.tsx';
 import { Compute } from './Compute.tsx';
 import { TimeStrip } from './TimeStrip.tsx';
@@ -77,8 +77,16 @@ export interface RunPanelProps {
   visible?: boolean;
   /** Stop a look-back run's settling: the footprints refined so far become the final library. */
   onStopSettling?: () => void;
-  /** The mode of the multi-session run this recording is part of (null or absent: none). */
+  /** The kind of the plan step whose run this is (null or absent: no run has started). */
   sessionMode?: LibraryMode | null;
+  /** How many sessions that run has (1: a single recording or a stream). */
+  sessions?: number;
+  /** Run on the pre-run sheet: starts the open recording's run (absent: Discover alone). */
+  onRun?: () => void;
+  /** Restart (absent: Discover again in place). */
+  onRestart?: () => void;
+  /** Saving the sheet's values into the open project (absent: no project). */
+  projectParams?: ProjectParams;
 }
 
 /**
@@ -114,7 +122,13 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   const prerun = () => s().status() === 'idle' && !inSessionRun() && !props.live;
   /** When a change to a start-time setting takes effect (`DiscoverSettings`). */
   const settingsContext = (): SettingsContext =>
-    props.sessionMode === 'separate' ? 'separate' : props.sessionMode ? 'joint' : 'single';
+    (props.sessions ?? 1) < 2
+      ? 'single'
+      : props.sessionMode === 'separate'
+        ? 'separate'
+        : props.sessionMode
+          ? 'joint'
+          : 'single';
 
   // ---- Extract ----
   /** Extract runs in this run: a recording, or a stream whose factors it solves on. */
@@ -281,7 +295,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             class="btn-secondary btn-small cala-icon-btn"
             aria-label="Restart"
             title="Start Discover again from frame 0 with the settings as they are now (a new run: Extract starts over)"
-            onClick={() => void s().start()}
+            onClick={() => (props.onRestart ? props.onRestart() : void s().start())}
           >
             <Icon name="restart" size={14} />
           </button>
@@ -317,6 +331,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               sessionRun={inSessionRun()}
               extractRunning={p().status() === 'running'}
               frameWidth={props.frameWidth}
+              projectParams={props.projectParams}
             />
           }
         >
@@ -325,9 +340,10 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             context="prerun"
             autoExtract={auto()}
             onAutoExtract={setExtractAfterDiscover}
-            sessionRun={false}
+            sessionRun={props.onRun !== undefined}
             frameWidth={props.frameWidth}
-            onRun={() => void s().start()}
+            projectParams={props.projectParams}
+            onRun={() => (props.onRun ? props.onRun() : void s().start())}
           />
         </Show>
       </Show>

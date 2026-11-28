@@ -106,7 +106,11 @@ export function runParamsLayer(s: RunParamsSettings): ParamsLayer {
           },
         }
       : {}),
-    ...(s.findNewCells !== undefined ? { stages: { find_new_cells: s.findNewCells } } : {}),
+    // Every run Extracts after its Discover (`multi-run.ts`).
+    stages: {
+      extract: true,
+      ...(s.findNewCells !== undefined ? { find_new_cells: s.findNewCells } : {}),
+    },
     ...(s.qc !== undefined ? { qc: { enabled: s.qc } } : {}),
     ...(s.repeatable !== undefined ? { compute: { repeatable: s.repeatable } } : {}),
     ...(s.flicker ? { preprocess: { flicker: s.flicker } } : {}),

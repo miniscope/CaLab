@@ -66,7 +66,7 @@ export interface FrameClient extends PipelineClient {
   open(entries: FolderEntry[]): Promise<FrameSourceInfo>;
   /** Open sessions as one recording, in order (a Joint run). */
   openSessions?(sessions: SessionInput[]): Promise<FrameSourceInfo>;
-  /** Each session's info (or error) for the session list; nothing stays open. */
+  /** Each session's info (or error) for the project's table; nothing stays open. */
   probe?(sessions: SessionInput[]): Promise<SessionProbeResult[]>;
   /** Connect to a live source at a WebSocket URL (the worker owns the socket). */
   openLive?(url: string): Promise<FrameSourceInfo>;

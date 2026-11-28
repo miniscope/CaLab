@@ -41,7 +41,7 @@ function harness(
   n = 3,
   opts: {
     sink?: (run: number) => ResultsSink;
-    runRecord?: (s: { mode: string }, sessionIndex?: number) => Record<string, unknown>;
+    runRecord?: (kind: string, sessionIndex?: number) => Record<string, unknown>;
     /**
      * As the app does: a new Discover leaves the Extract store as it was (its last outcome
      * stays until Extract runs again), and a session takes a while to open.
@@ -131,7 +131,7 @@ function harness(
   const start = () =>
     multi.start({
       sessions: Array.from({ length: n }, (_, i) => session(i)),
-      settings: { mode },
+      kind: mode,
       openRun: async (i: number) => ({
         id: `r${i}_cala`,
         sink: opts.sink?.(i) ?? sink,
@@ -173,7 +173,7 @@ describe('run files', () => {
         .map((t) => JSON.parse(t.text));
     return { texts, sinkFor, runFiles };
   };
-  const record = (s: { mode: string }, index?: number) => ({
+  const record = (kind: string, index?: number) => ({
     record_version: 2,
     software: { app_version: 'v9', git_commit: 'abc', engine_version: '1.0' },
     params: {
@@ -186,7 +186,7 @@ describe('run files', () => {
     },
     stages: [{ stage: 'discover', outcome: 'done' }],
     input: { live: false },
-    settings: { mode: s.mode, index: index ?? null },
+    settings: { mode: kind, index: index ?? null },
   });
 
   it('a Joint run is one run: planned before its first frame, then running, then finished', async () => {
@@ -234,6 +234,26 @@ describe('run files', () => {
     ).toEqual([
       ['written', 's0/cala-export.npz', 'cala:r0_cala'],
       ['written', 's1/cala-export.npz', 'cala:r0_cala'],
+    ]);
+    h.dispose();
+  });
+
+  it('a finished one-session run started again is a new run, written in full', async () => {
+    const r = recording();
+    const h = harness('separate', 1, { sink: r.sinkFor, runRecord: record, appLike: true });
+    await h.start();
+    await h.done();
+    // Restart after the run ended: the same plan again, without leaving it first.
+    await h.start();
+    expect(h.multi.finished()).toBe(false);
+    await h.done();
+    expect(r.runFiles(0).map((f) => f.run.status)).toEqual([
+      'planned',
+      'running',
+      'finished',
+      'planned',
+      'running',
+      'finished',
     ]);
     h.dispose();
   });
