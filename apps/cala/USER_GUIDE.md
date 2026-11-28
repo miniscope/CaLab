@@ -207,6 +207,7 @@ Discover or stop the live run, and the tab shows, in the order you use them:
   Discover; while the Final settle runs, all the work shown (the cell model's, the
   footprint helpers' and every look-back worker's) is Final settle. Extract runs after it
   and is not in the grid.
+
 - **Results**: **Extract** (or **Extract again**) and Extract's status line.
 
 **Export** is on the run rail: once there is a result (Extract done, or a live run ended)
