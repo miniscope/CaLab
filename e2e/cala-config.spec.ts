@@ -65,9 +65,7 @@ test('Cala: a config file sets the cell diameter, and the run carries it', async
   await expect(page.getByTestId('pass2-status')).toContainText('Extract done', {
     timeout: 180_000,
   });
-  await expect(page.getByTestId('settings-summary')).toContainText(
-    'Expected cell diameter 32 µm',
-  );
+  await expect(page.getByTestId('settings-summary')).toContainText('Expected cell diameter 32 µm');
   const meta = metaText(await exportNpz(page));
   expect(meta).toContain('"cell_diameter":{"px":16,"source":"optics","um_per_px":2}');
   expect(meta).toContain('"/scales/expected_cell_diameter_um":"file:cala-d16.json"');
