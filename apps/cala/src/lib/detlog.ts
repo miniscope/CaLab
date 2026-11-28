@@ -16,7 +16,8 @@ export type DetLogRow = [DetLogKind, number, ...(number | string)[]];
 
 /**
  * Row kinds and their fields after `observed`:
- * - `batch`: start, count, library version the fast loop used, `SlowLoop.work` before the batch;
+ * - `batch`: start, count, library version the fast loop used, `SlowLoop.work` before the batch,
+ *   hashes of the batch's preprocessed frames, its traces and its noise map (0: none);
  * - `take`: take sequence, visit worker, hash of the job bytes;
  * - `apply`: take sequence, visit worker, hash of the result bytes, `SlowLoop.work` before;
  * - `pub`: library version, hash of the library bytes;

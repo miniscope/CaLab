@@ -137,6 +137,8 @@ export interface Schedule {
   visitWorkers: number;
   /** Most delay of a visit result and of a look-back answer, ms. */
   visitMs: number;
+  /** Most delay of visit worker `i`'s results, ms (absent: `visitMs`). */
+  visitMsOf?: (i: number) => number;
   /** Visit results come back before anything else runs (microtasks, not timers; `visitMs` unused). */
   visitInstant?: boolean;
   answerMs: number;
@@ -154,7 +156,8 @@ export interface Schedule {
 
 /**
  * One Discover run of `FRAMES` frames and its Final settle under `sch`: the settle's last status,
- * the fake loop's pass counts and call log, the look-back answers and releases, the accounting.
+ * the fake loop's pass counts and call log, the look-back answers and releases, the accounting,
+ * and per visit worker the most visits it had posted and not yet answered at once.
  */
 export async function settleRun(sch: Schedule) {
   const rand = lcg(sch.seed);
@@ -171,10 +174,16 @@ export async function settleRun(sch: Schedule) {
       back[i]({ type: 'result', session: m.session, bytes: m.bytes, ms: 1 });
     }, 0),
   );
+  /** Per visit worker: jobs posted and not yet answered, and the most at once. */
+  const queued = new Array<number>(sch.visitWorkers).fill(0);
+  const queuedMax = new Array<number>(sch.visitWorkers).fill(0);
   const back = Array.from({ length: sch.visitWorkers }, (_, i) =>
     visitPort<Parameters<SlowRunner['handleVisit']>[1]>(
-      (m) => runner!.handleVisit(i, m),
-      sch.visitMs,
+      (m) => {
+        queued[i]--;
+        runner!.handleVisit(i, m);
+      },
+      sch.visitMsOf?.(i) ?? sch.visitMs,
     ),
   );
   const count = { answers: 0, releases: 0 };
@@ -186,7 +195,12 @@ export async function settleRun(sch: Schedule) {
     create: () => loop,
     toFast: { postMessage: () => {} },
     toMain: { postMessage: (m) => toMain.push(m) },
-    visits: toVisit.map((post) => ({ postMessage: (m: OwnerToVisit) => post(m) })),
+    visits: toVisit.map((post, i) => ({
+      postMessage: (m: OwnerToVisit) => {
+        if (m.type === 'job') queuedMax[i] = Math.max(queuedMax[i], ++queued[i]);
+        post(m);
+      },
+    })),
     lookback: { postMessage: (m: SlowToLookback) => lbPorts[0](m) },
     now: () => performance.now(),
     defer: (fn) => setTimeout(fn, 0),
@@ -257,5 +271,5 @@ export async function settleRun(sch: Schedule) {
     .at(-1)!;
   // Answers still on their way when the settle ended (after a Stop) are released as they come.
   await new Promise((r) => setTimeout(r, 4 * (sch.answerMs + 2)));
-  return { st, pass, count, accounting, log };
+  return { st, pass, count, accounting, log, queuedMax };
 }
