@@ -63,7 +63,7 @@ A **Miniscope recording folder**: a numbered series of `.avi` files, plus the si
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Chrome, Edge (desktop) | Recommended. WebGPU motion correction when a GPU is available, and a save dialog that writes exports straight to a file you choose.                                             |
 | Firefox, Safari        | Run the full pipeline with motion correction on the CPU (Safari itself has not been tested). Exports are built in the browser's private file system and handed to the download. |
-| Any browser, no WebGPU | Motion correction falls back to the CPU. The badge in the Run tab says **Motion: CPU** or **Motion: WebGPU**. Throughput is lower; the method is the same.                      |
+| Any browser, no WebGPU | Motion correction falls back to the CPU. The chip in the Run tab's Compute block says **CPU motion** or **GPU motion**. Throughput is lower; the method is the same.            |
 
 Needed in any browser: WebAssembly, module Web Workers, and a folder picker
 (`showDirectoryPicker` in Chrome and Edge, else `<input webkitdirectory>`). Several CPU cores help: cell discovery uses the spare
@@ -179,8 +179,7 @@ Discover or stop the live run, and the tab shows, in the order you use them:
   - Discover (with look-back): **Cells waiting for data** (of the cells found),
     **Look-back re-read** (frames) and **Background settle** (saved frames re-read per live
     frame, 0 to 2, the tick at the ceiling in force).
-  - Final settle: a frames-per-second trace over the step (fixed 10 to 500 fps, log),
-    **Frames re-read** (of its plan), **Cells still moving** (the tick marks where the
+  - Final settle: **Frames re-read** (of its plan), **Cells still moving** (the tick marks where the
     footprints count as settled), **Footprints settled** and **Visits per frame** (0 to 1),
     with a note when it reads the factors or re-reads the file (and why), and **Stop Final
     settle**.
@@ -189,24 +188,56 @@ Discover or stop the live run, and the tab shows, in the order you use them:
 
   Every other step is one line: a finished step is its stage colour with ✓ and its result
   and time ("✓ Discover · 383 cells · 0:48"), a waiting one says waiting, one that will
-  not run says off and why. Above the steps the status line (Discover done, the motion
-  badge); under them the **Plot window** control (**Whole run** and, when the run is long enough,
-  **24 h**, **1 h**, **10 min**, **1 min**), the whole-run strip and one overlaid plot of
-  the convergence metrics (cells at frame, new cells per minute, churn, stable, explained,
-  residual). **Cells at frame** is the count at each QC snapshot (once per second of
-  recording); it stops at the end of Discover, so afterwards the rail's **Cells** is the
-  current count. The rows update at most twice a second. Then **Speed** and **Workers**.
-  Workers is a grid of small
-  squares, one per worker (a browser thread), grouped as Frame loop, Cell model,
-  Footprint helpers and Look-back and settle. Each square fills from the bottom with
-  one colour per job (**Read frames** light blue and **Find cells** blue, the Discover
-  colour; **Look-back** teal; **Background settle** plum stripes and **Final settle**
-  plum, the Final settle colour; grey is **Idle**), each as tall as that job's share of
-  the last second, and shows how busy the worker was as a percent; hover a square for
-  the split. Read frames, Find cells, Look-back and Background settle are the jobs of
-  Discover; while the Final settle runs, all the work shown (the cell model's, the
-  footprint helpers' and every look-back worker's) is Final settle. Extract runs after it
-  and is not in the grid.
+  not run says off and why. While Discover runs, its panel also has **Lag behind reading**:
+  how many frames the cell model is behind the frames read (fixed 0 to 60 s of recording).
+  Above the steps the status line (Discover done).
+
+- **Over the recording** (**Over the stream** for a live run): one strip with three rows on
+  the same time axis, so a moment lines up in all of them, and one set of time labels under
+  the last row (stream time, m:ss). The **Plot window** control (**Whole run** and, when the
+  run is long enough, **24 h**, **1 h**, **10 min**, **1 min**) and the whole-run strip
+  above it set the window for all three rows; click the convergence plot to inspect a time (the other rows mark it), drag on it or on the whole-run strip to brush
+  one.
+  - The convergence plot: the overlaid metrics (cells at frame, new cells per minute,
+    churn, stable, explained, residual). **Cells at frame** is the count at each QC
+    snapshot (once per second of recording); it stops at the end of Discover, so
+    afterwards the rail's **Cells** is the current count.
+  - **fps** on a fixed 10 to 500 log scale: the target dashed (Max at the top), the speed
+    achieved solid, the floor dotted, and in Curve mode the plan in long dashes; a thin
+    line marks each change of target.
+  - **Workers busy, by kind**, 0 to the number of workers: each reading covers the time
+    since the reading before it, so the bands are steps; the colours are the worker
+    squares' (below).
+
+  A recording with look-back adds a **Final settle** column on the right, on its own axis
+  (the frames it re-read, 0 to its plan), because no recording time passes then: its
+  frames per second (fixed 10 to 500, log) and its work by kind. The strip redraws at most twice a second.
+
+- **Compute**: where the run's machine time goes. The header shows where motion
+  correction runs (**GPU motion** or **CPU motion**; amber with a warning icon if WebGPU
+  failed mid-run) and how many workers are busy. Under it **Speed** (see below) and
+  **Workers**: one 28 px square per worker (a browser thread), grouped as Frame loop,
+  Cell model, Footprint helpers and Look-back and settle. Each square fills from the
+  bottom with one colour per job (**Read frames** light blue and **Find cells** blue, the
+  Discover colour; **Look-back** teal; **Background settle** plum stripes and **Final
+  settle** plum, the Final settle colour; grey is **Idle**), each as tall as that job's
+  share of the last second; the figure under the square is how busy the worker was, in
+  percent. The **?** beside Workers explains the squares; hover a square for the split.
+  Read frames, Find cells, Look-back and Background settle are the jobs of Discover; while
+  the Final settle runs, all the work shown is Final settle. Extract runs after it and is
+  not in the grid.
+- **Speed** (in Compute, and in the pre-run sheet): **Max**, **Fixed**, **Curve** or
+  **Auto**. Max and Fixed show the track, fixed 10 to 500 fps on a log scale: the hatched
+  start is where going slower gains nothing, the **floor** tick is the slowest useful
+  speed, the **max** tick what this machine reaches now (a target above it behaves as
+  Max), and a light fill shows the speed achieved. The labels over the track never
+  overlap: when they would, the max label wins. Drag the thumb, or use the arrow keys, to
+  set a Fixed target; at Max the thumb sits on the **Max** stop. **Curve** shows its plan
+  instead of the track: the target over the recording (0 to 100 %, same fps scale, the
+  floor dotted, a line where Discover is now). **Auto** shows its time budget: before the
+  run, a bar of a Max run's time plus the extra time you allow; during the run, **Budget
+  used** in seconds of the budget (paused time does not count). While Discover runs the
+  **Refinement** gauge shows the visits per frame (see Discover, below).
 
 - **Results**: **Extract** (or **Extract again**) and Extract's status line.
 
@@ -309,12 +340,13 @@ A run has two named stages: **Discover** and **Extract** (see
    30,000-frame recording), but Discover is only a little faster for it (3–8 % at Max in our tests on long
    recordings, little on short ones), and it finds a few fewer cells: the late,
    rarely active cells that extra visits still pick up (1–2 % of matched cells on
-   simulations, about 5 % of cells on real data), so it is not the default.) The Speed block shows the
-   rate in force ("Refinement 0.15 visits/frame (fixed)" or, with Auto, "Refinement 0.075 visits/frame (Auto: fewer new cells lately, …)").
+   simulations, about 5 % of cells on real data), so it is not the default.) The Speed block's
+   **Refinement** gauge shows the visits per frame achieved (0 to 0.5), the target in force
+   ticked and the allowed band shaded; its tooltip says which schedule runs.
    Within the rate, a run never makes more than 4/3 and, on a recording, never fewer
    than 2/3 of its visits per frame: on a fast Speed setting or at **Max**, when the
-   workers cannot keep up, the run is held slower than asked and the Speed block says so
-   ("Held at N fps to keep refinement at 0.15 visits/frame"); a slow or paced run no
+   workers cannot keep up, the run is held slower than asked: the gauge turns amber and
+   the Speed block says "Held at N fps to keep refinement up"; a slow or paced run no
    longer over-visits. The same recording then gives about the same cells at any speed
    and on any machine. A live stream cannot slow down, so it keeps only the upper limit.
 3. **The Final settle ends Discover (recordings).** For a recording, Discover runs with

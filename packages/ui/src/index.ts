@@ -39,6 +39,8 @@ export type { StageHue, StatusTone, Tone } from './tones.ts';
 export { Icon, ICON_NAMES } from './Icon.tsx';
 export type { IconName, IconProps } from './Icon.tsx';
 export { Badge } from './Badge.tsx';
+export { HelpTip } from './HelpTip.tsx';
+export type { HelpTipProps } from './HelpTip.tsx';
 export type { BadgeProps } from './Badge.tsx';
 export { Meter, MeterRow } from './Meter.tsx';
 export type { MeterProps, MeterRowProps } from './Meter.tsx';

@@ -21,6 +21,9 @@ import {
 } from './work-meter.ts';
 import type { SlowStatus } from '../workers/slow-types.ts';
 
+/** Shortest last interval closed at Discover's end, ms: shorter ones are too noisy to show. */
+const TAIL_MIN_MS = 200;
+
 /** What the work readout reads from the pipeline store and the Speed control. */
 export interface WorkReadoutDeps {
   clock: () => number;
@@ -71,11 +74,15 @@ export function createWorkReadout(deps: WorkReadoutDeps) {
   const [floor, setFloor] = createSignal<FloorDisplay>(floorMeter.display());
   /** Measurement only: the slow worker's newest raw accounting (cumulative; `__cala.pipeline.accounting()`). */
   let lastAccounting: WorkStatus | null = null;
+  /** The first reading after Discover's last frame has been written to History (once per run). */
+  let tailClosed = false;
 
   /** A slow-loop status: the accounting, the floor, the work shares and the top speed. */
   function onStatus(st: SlowStatus): void {
     if (!st.accounting) return;
     lastAccounting = st.accounting;
+    // The rater's first snapshot opens the first reading's interval (History's work plot starts there).
+    if (untrack(status) !== 'done') runHistory?.workOpen();
     // Throttled to about 1 Hz inside the meter: no per-batch work for the floor estimate.
     if (floorMeter.due(st.accounting.wallMs)) {
       const lb = st.lookback;
@@ -140,7 +147,12 @@ export function createWorkReadout(deps: WorkReadoutDeps) {
         }
       }
     }
-    const rates = workRater.push(st.accounting);
+    // After Discover's last frame the first reading closes early (at least `TAIL_MIN_MS`), so the
+    // work plot reaches the end of the recording; it holds the slow loop's catch-up and the start
+    // of the Final settle, each in its own kind.
+    const done = untrack(status) === 'done';
+    const tail = done && !tailClosed;
+    const rates = workRater.push(st.accounting, tail ? TAIL_MIN_MS : undefined);
     if (!rates) return;
     const stages = stageBusyMeter.take(clock());
     if (stages) rates.fast = { stages };
@@ -153,8 +165,12 @@ export function createWorkReadout(deps: WorkReadoutDeps) {
       setWorkFastMaxFps(fast);
       setWorkMaxVisitLimited(max > 0 && max < fast);
     }
-    // Not after Discover's last frame (stream time stands still; see `RunHistory.work`).
-    if (untrack(status) !== 'done') {
+    // Not after Discover's last frame, but for the tail (stream time stands still; see `RunHistory.work`).
+    if (tail) {
+      // Only the work by kind: the target and the top speed were let go at the last frame.
+      tailClosed = true;
+      runHistory?.work(rates, maxFpsEstimator.estimate(), true);
+    } else if (!done) {
       // The history's series is the fast loop's own top speed (`fast_max_fps`).
       runHistory?.work(rates, maxFpsEstimator.estimate());
       runHistory?.target(gatePace());
@@ -181,6 +197,8 @@ export function createWorkReadout(deps: WorkReadoutDeps) {
   /** A run starts or stops: every meter and readout is cleared. */
   function reset(): void {
     forwardDrops = null;
+    tailClosed = false;
+    lastAccounting = null;
     workRater.reset();
     floorMeter.reset();
     setFloor(floorMeter.display());

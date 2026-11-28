@@ -1,11 +1,10 @@
 /**
- * Pure layout and text helpers of the work display (`components/WorkDisplay.tsx`;
- * `beta_speed_control_design.md`, section 3). Everything here is a function of numbers, so the
- * display's fixed ranges and its words are tested without a DOM.
+ * Pure layout and text helpers of the worker squares (`components/WorkDisplay.tsx`) and the
+ * time strip (`components/TimeStrip.tsx`). Everything here is a function of numbers, so the
+ * fixed ranges and the words are tested without a DOM.
  *
- * Every range is fixed (the PI forbids auto-scaling): the work bar and the work plot run 0 to the
- * number of workers, the speed plot runs over the slider's 10 to 500 fps log scale, the rows
- * 0 to 100 %.
+ * Every range is fixed (no auto-scaling): the work plot runs 0 to the number of workers, the
+ * speed plot over the Speed track's 10 to 500 fps log scale, the squares 0 to 100 %.
  */
 import { SPEED_SCALE } from './speed-track.ts';
 import {
@@ -189,17 +188,24 @@ export function stripLayout(
   };
 }
 
-/** x of `v` in a segment over 0..`total` (clamped). */
-export function segX(seg: { x0: number; x1: number }, v: number, total: number): number {
-  if (!(total > 0)) return seg.x0;
-  const f = Math.min(1, Math.max(0, v / total));
-  return seg.x0 + (seg.x1 - seg.x0) * f;
-}
-
 /** A sample of the stacked work plot. */
 export interface StackPoint {
   x: number;
   values: Record<WorkKind, number>;
+}
+
+/**
+ * Work readings as steps. Each reading is the mean over the interval since the one before it,
+ * so it is drawn flat back to the previous reading's x (the first reading only marks its own x:
+ * the caller stamps a run's first reading also where its interval opened). Input sorted by x.
+ */
+export function stepPoints(points: readonly StackPoint[]): StackPoint[] {
+  const out: StackPoint[] = [];
+  points.forEach((p, i) => {
+    if (i > 0) out.push({ x: points[i - 1].x, values: p.values });
+    out.push(p);
+  });
+  return out;
 }
 
 /**
@@ -262,23 +268,6 @@ export function thinIndices(n: number, max: number): number[] {
   if (n <= max) return Array.from({ length: n }, (_, i) => i);
   const out: number[] = [];
   for (let i = 0; i < max; i++) out.push(Math.round((i * (n - 1)) / (max - 1)));
-  return out;
-}
-
-/** Round tick values over 0..`total`: a 1, 2 or 5 times a power of ten step giving at most `maxTicks` ticks. */
-export function frameTicks(total: number, maxTicks: number): number[] {
-  if (!(total > 0) || maxTicks < 2) return [0];
-  let step = 0;
-  for (let mag = 1; step === 0; mag *= 10) {
-    for (const m of [1, 2, 5]) {
-      if (Math.floor(total / (m * mag)) + 1 <= maxTicks) {
-        step = m * mag;
-        break;
-      }
-    }
-  }
-  const out: number[] = [];
-  for (let v = 0; v <= total; v += step) out.push(v);
   return out;
 }
 

@@ -14,6 +14,7 @@ import { extractAfterDiscover } from '../lib/run-stages.ts';
 import { CSETTLE, SETTLE } from '../lib/settle.ts';
 import { lookbackFacts, notSettled, settleNote, type LookbackFacts } from '../lib/lookback-text.ts';
 import { RAIL_SPEED_RANGE } from '../lib/rail-view.ts';
+import { ASSUMED_FPS } from '../lib/miniscope-meta.ts';
 import { createSampled } from '../lib/sampled.ts';
 import {
   STATE_WORD,
@@ -268,25 +269,33 @@ export function createLookbackFacts(
 }
 
 /** Discover's rows on a look-back run: cells waiting for data, frames re-read, Background settle. */
+/** The lag row's declared range, seconds of recording (History's slow-loop lag starts on the same range). */
+export const LAG_RANGE_S = 60;
+
 export function DiscoverBody(props: {
   pipeline: PipelineStore;
   cells: CellStore;
   step: StepView;
+  /** The recording's frame rate, Hz (0: unknown, `ASSUMED_FPS` is used). */
+  fps?: number;
   children?: JSX.Element;
 }): JSX.Element {
-  // One reading for the look-back figures and the cell count, so the rows always agree.
+  // One reading for the look-back figures, the cell count and the lag, so the rows always agree.
   const snap = createSampled(
     () => {
       const st = props.cells.status();
+      const lag = props.cells.metrics().lag.at(-1);
       return {
         facts: st?.lookback ? lookbackFacts(st.lookback, st.final ?? false) : null,
         cells: props.cells.library()?.ids.length ?? 0,
+        lag: lag === null || lag === undefined ? null : lag,
       };
     },
     () => props.step.state,
     SAMPLE_MS,
   );
   const cellCount = () => snap().cells;
+  const fps = () => (props.fps && props.fps > 0 ? props.fps : ASSUMED_FPS);
   const shown = () => (props.pipeline.lookbackRun() ? snap().facts : null);
   return (
     <div
@@ -334,39 +343,34 @@ export function DiscoverBody(props: {
           </>
         )}
       </Show>
+      <Show when={props.step.state === 'running' || props.step.state === 'paused'}>
+        <MeterRow
+          label="Lag behind reading"
+          value={snap().lag}
+          min={0}
+          max={LAG_RANGE_S * fps()}
+          tone="neutral"
+          size="sm"
+          display={snap().lag !== null ? n0(snap().lag!) : undefined}
+          unit="frames"
+          format={(v) =>
+            `the cell model is ${n0(v)} frames (${(v / fps()).toFixed(1)} s) behind the frames read; fixed range 0 to ${LAG_RANGE_S} s`
+          }
+          testid="discover-lag"
+        />
+      </Show>
       {props.children}
     </div>
   );
 }
 
-/** The Final settle's body: its rate over the pass and its rows. */
+/** The Final settle's body: its rows (its rate over the pass is on the time strip). */
 export function SettleBody(props: {
   pipeline: PipelineStore;
   cells: CellStore;
   step: StepView;
   children?: JSX.Element;
 }): JSX.Element {
-  const [samples, setSamples] = createSignal<{ x: number; fps: number }[]>([]);
-  createEffect(
-    on(
-      () => props.pipeline.status(),
-      (st) => {
-        if (st === 'starting') setSamples([]);
-      },
-    ),
-  );
-  createEffect(
-    on(
-      () => props.pipeline.work(),
-      (r) => {
-        const st = props.cells.status()?.lookback?.settle;
-        const fps = r?.lookback.kinds.end.framesPerS ?? 0;
-        if (props.step.state !== 'running' || !st || st.total <= 0 || !(fps > 0)) return;
-        setSamples((prev) => [...prev, { x: Math.min(1, st.fed / st.total), fps }]);
-      },
-      { defer: true },
-    ),
-  );
   const facts = createLookbackFacts(
     () => props.cells,
     () => props.step.state,
@@ -387,7 +391,6 @@ export function SettleBody(props: {
   const moving = () => s()?.moving ?? null;
   return (
     <div class="cala-step__body cala-step__rows" data-testid="settle-facts">
-      <RateChart samples={samples()} testid="settle-rate" />
       <MeterRow
         label="Frames re-read"
         value={s() && s()!.total > 0 ? s()!.fed : null}

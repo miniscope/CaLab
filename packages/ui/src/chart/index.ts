@@ -49,7 +49,9 @@ export {
   binDisplayValue,
 } from './history-geometry.ts';
 export type { ExpansionMark } from './history-geometry.ts';
-export { HistoryPlot } from './HistoryPlot.tsx';
+export { HistoryPlot, HISTORY_GUTTER_PX } from './HistoryPlot.tsx';
+export { placeAxisLabels } from './axis-labels.ts';
+export type { AxisLabel, AxisLabelCandidate, AxisLabelOptions } from './axis-labels.ts';
 export type { HistoryPlotProps, HistoryEvent } from './HistoryPlot.tsx';
 export { WholeRunStrip } from './WholeRunStrip.tsx';
 export type { WholeRunStripProps } from './WholeRunStrip.tsx';

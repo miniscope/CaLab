@@ -545,6 +545,8 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
   let lastDropped = 0;
   let gapPending = 0;
   let lastGapT = -Infinity;
+  /** Stream s where the first work reading's interval opened (null: no reading yet, or a saved run). */
+  let workStart: number | null = null;
   const [tick, setTick] = createSignal(0);
   const [runEnd, setRunEnd] = createSignal<number | null>(null);
   /** Bumped when a group gains something to look at (a range step or a warning). */
@@ -565,6 +567,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     lastDropped = 0;
     gapPending = 0;
     lastGapT = -Infinity;
+    workStart = null;
     history = freshStore(o.workers);
     events = new RunEvents();
     history.onRangeStep = (key, e) => {
@@ -609,6 +612,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     lastDropped = 0;
     gapPending = 0;
     lastGapT = -Infinity;
+    workStart = null;
     history = o.bins ? StreamHistory.fromExport(o.bins, allSeries(1)) : freshStore(1);
     // (A saved run keeps the ranges it was exported with; the 1 only fills series an old export lacks.)
     events = new RunEvents();
@@ -703,12 +707,19 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
 
   /**
    * The work shares of the last second or so (`WorkRates`) and the fast loop's top-speed estimate.
-   * Pushed at the stream time Discover has reached, so the caller stops after its last frame (the
-   * final settle's accounting lives in the `?debug` readout and the `-work.json` log only: stream
-   * time stands still then and every sample would land in one bin).
+   * Pushed at the stream time Discover has reached; `kindsOnly` writes only the work by kind
+   * (the reading that closes Discover's last interval, after the speed target was let go). The
+   * caller stops after the first reading
+   * that follows Discover's last frame (the Final settle's accounting lives in the `?debug`
+   * readout and the `-work.json` log only: stream time stands still then and every sample would
+   * land in one bin).
    */
-  function work(r: WorkRates, maxFps: number): void {
+  function work(r: WorkRates, maxFps: number, kindsOnly = false): void {
     const t = processedS;
+    if (kindsOnly) {
+      pushKinds(r, t);
+      return;
+    }
     const s = r.slow;
     history.push('work_live', t, s.live);
     history.push('work_visit', t, s.visit);
@@ -726,10 +737,20 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
       r.lookback.busy / Math.max(1, r.lookback.capacity ?? r.lookback.workers.length),
     );
     if (maxFps > 0) history.push('fast_max_fps', t, maxFps);
+    pushKinds(r, t);
+  }
+
+  /** The work-by-kind series of one reading at `t`. */
+  function pushKinds(r: WorkRates, t: number): void {
     const { totals: byKind, count } = workByKind(r);
     // The pool can grow mid-run: widen the (fixed) range before a value needs it.
     for (const k of WORK_KINDS) history.widenFixedRange(kindSeriesKey(k), count);
     for (const k of WORK_KINDS) history.push(kindSeriesKey(k), t, byKind[k]);
+  }
+
+  /** The work readings' first interval opens now (once per run; later calls are ignored). */
+  function workOpen(): void {
+    workStart ??= processedS;
   }
 
   /** The speed target now, fps (0 = Max), at the stream time Discover has reached. */
@@ -780,6 +801,9 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     liveCounters,
     convergence,
     work,
+    workOpen,
+    /** Stream s where the first work reading's interval opened (null: none yet). */
+    workStart: () => workStart,
     target,
     births,
     speedSetting,
